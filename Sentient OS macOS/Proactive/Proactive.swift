@@ -41,10 +41,12 @@ actor Proactive {
 
     static let shared = Proactive()
 
-    /// How far back the judge looks. PART 1 casts a WIDER net (up to 8 candidates); PART 2 verifies
-    /// them against the live world and prunes to the strongest ≤5 — that's where scarcity = taste.
+    /// How far back the judge looks. PART 1 casts a wide candidate net; PART 2 verifies each one
+    /// against the live world. There is no count cap on either stage — quality is the only filter,
+    /// decided by the model. (Previously PART 1 capped at 8 candidates and PART 2 at 5 ready cards;
+    /// both were lifted so the user sees every genuine task.)
     static let lookbackDays = 7
-    static let maxItems = 8
+    static let maxItems = 8   // kept as a label only — no longer enforced; see findActionItems
 
     enum ProError: LocalizedError {
         case noRecent
@@ -148,7 +150,7 @@ actor Proactive {
         Log("Proactive.judge: \(recent.count) summaries in the last \(Self.lookbackDays)d → asking Codex (summaries-only, hermetic)…")
         do {
             let env = try await CodexCLI.shared.run(inv, onLine: onLine)
-            let items = Array(Self.parse(env.result).prefix(Self.maxItems))
+            let items = Self.parse(env.result)   // no count cap — every genuine candidate continues to PART 2
             Log("Proactive.judge: ✅ \(items.count) action item(s) (turns \(env.numTurns ?? -1), \(env.outputTokens ?? -1) out-tokens)")
             #if DEBUG   // B7: title/action/importance/sources are the user's life — DEBUG-only so it can
                         // never become a Release breadcrumb (Sentry is Release-only).
@@ -349,12 +351,12 @@ actor Proactive {
         - A confident wrong item is far worse than a missed one.
 
         ## Rank, then cut
-        Rank by (impact to THIS user) × (time-sensitivity) × (how clearly actionable it is). Return AT \
-        MOST \(maxItems) candidates. A later step verifies each one against the live world and keeps \
-        only the ~5 strongest, so it's fine to surface a slightly wider set of GENUINE candidates here \
-        — but still NEVER pad: return FEWER (even zero) if there aren't that many worth surfacing. Pick \
-        the genuinely strongest items regardless of which source they come from — do NOT force a \
-        spread; a deep, well-evidenced single-source item beats a shallow one every time.
+        Rank by (impact to THIS user) × (time-sensitivity) × (how clearly actionable it is). There is \
+        NO count cap on candidates — return EVERY item that genuinely merits one. A later step \
+        verifies each against the live world, so it's fine to surface a wider set of GENUINE \
+        candidates here, but still NEVER pad: return FEWER (even zero) if there aren't any worth \
+        surfacing. Pick the genuinely strongest items regardless of which source they come from — do \
+        NOT force a spread; a deep, well-evidenced single-source item beats a shallow one every time.
 
         ## Output
         Return ONLY the structured object defined by the output schema — no prose around it. For each \
