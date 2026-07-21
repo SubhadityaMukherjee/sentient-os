@@ -34,6 +34,7 @@ struct AnalysisPopover: View {
     let modelMissing: Bool
     let lastRun: String                    // last full cycle, pre-formatted by HomeView (deck-aware)
     var onAnalyze: () -> Void
+    var onTrackedTasks: () -> Void = {}    // opens the Tracked Tasks window (mark done off-computer, etc.)
     var onPickWhatsApp: () -> Void = {}    // tapping WhatsApp / iMessage opens the chat picker (in HomeView)
     var onPickIMessage: () -> Void = {}
     var onPickGmail: () -> Void = {}       // tapping Gmail / Calendar opens the connect sheet (in HomeView)
@@ -75,6 +76,21 @@ struct AnalysisPopover: View {
 
             analyzeButton.padding(.top, 16)
             runFooter.padding(.top, 11)
+
+            // The Tracked Tasks window — mark a card's task done (often off the computer), park one
+            // on hold, or review what's already closed. Quiet link; opens as a sheet off HomeView.
+            Button(action: onTrackedTasks) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checklist").font(.system(size: 9.5))
+                    Text("Tracked tasks").font(.system(size: 11))
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
+                }
+                .foregroundStyle(Theme.Ink.bright)
+                .padding(.top, 12)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
 
             Rectangle().fill(.white.opacity(0.06)).frame(height: 1).padding(.vertical, 16)
 

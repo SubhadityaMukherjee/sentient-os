@@ -27,10 +27,12 @@ struct BriefingCard: View {
     var liveLines: [String] = []       // real cards: codex's live play-by-play (empty → demo theater)
     var onStop: (() -> Void)? = nil    // real cards: the per-card STOP
     var onClear: (() -> Void)? = nil   // real cards: the × that dismisses a card without firing
+    var onMarkClosed: (() -> Void)? = nil  // real cards: ✓ marks the task done (often off-computer) → Tracked Tasks
     var fireDimmed = false             // one task at a time: another task is running → the CTA waits
 
     @State private var hovering = false
     @State private var clearHover = false
+    @State private var markClosedHover = false
 
     static let width: CGFloat = 332
 
@@ -68,23 +70,40 @@ struct BriefingCard: View {
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
             .strokeBorder(border, lineWidth: 1))
         .overlay(alignment: .topTrailing) {
-            if phase == .offer, let onClear {
-                // The × that dismisses a card without firing — for the case where the user already
-                // did the task out-of-band, or just doesn't want it taking a slot. Offer-only: sealed
-                // is the welcome envelope, working has STOP, done is mid-fly-away. Quietest entry
-                // point on the card, mirror of STOP's typography but lower-contrast (a decline, not
-                // an interrupt).
-                Button(action: onClear) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.white.opacity(clearHover ? 0.85 : 0.42))
-                        .frame(width: 20, height: 20)
-                        .contentShape(Rectangle())
+            if phase == .offer, (onClear != nil || onMarkClosed != nil) {
+                // The card's decline row: ✓ marks the task done (often resolved off the computer — a
+                // phone call, an in-person yes); it lands in Tracked Tasks as Closed and the proactive
+                // judge won't resurface it. × is the lighter clear — just hide from this deck, no
+                // status change. Offer-only: sealed is the welcome envelope, working has STOP, done is
+                // mid-fly-away.
+                HStack(spacing: 2) {
+                    if let onMarkClosed {
+                        Button(action: onMarkClosed) {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white.opacity(markClosedHover ? 0.9 : 0.5))
+                                .frame(width: 22, height: 22)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .onHover { markClosedHover = $0 }
+                        .help("Mark as done (resolved off the computer)")
+                    }
+                    if let onClear {
+                        Button(action: onClear) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.white.opacity(clearHover ? 0.85 : 0.42))
+                                .frame(width: 20, height: 20)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .onHover { clearHover = $0 }
+                        .help("Clear from this deck")
+                    }
                 }
-                .buttonStyle(.plain)
-                .onHover { clearHover = $0 }
-                .padding(.top, 6)
-                .padding(.trailing, 6)
+                .padding(.top, 4)
+                .padding(.trailing, 4)
                 .transition(.opacity)
             }
         }
