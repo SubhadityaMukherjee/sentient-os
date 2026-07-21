@@ -137,7 +137,12 @@ actor Proactive {
             .appendingPathComponent("sentient-proactive-judge", isDirectory: true)
         try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
 
-        var inv = CodexCLI.Invocation(prompt: Self.prompt(recent: recent, now: now, calendarContext: calendarContext))
+        // The user-maintained Tracked Tasks file (vault root). Read before building the prompt so the
+        // judge can suppress already-closed items and resurface on-hold ones whose trigger shifted.
+        let trackedTasksBlock = await TaskTracker.shared.renderForPrompt()
+
+        var inv = CodexCLI.Invocation(prompt: Self.prompt(recent: recent, now: now, calendarContext: calendarContext,
+                                                          trackedTasksBlock: trackedTasksBlock))
         inv.feature = "proactive"
         inv.effort = .high                  // gpt-5.6-sol → high (this judgment is the product)
         inv.sandbox = .readOnly             // never writes or acts
@@ -230,7 +235,8 @@ actor Proactive {
 
     // MARK: The prompt — accuracy-first, detailed (the judgment IS the product)
 
-    private static func prompt(recent: [CloudNote], now: Date, calendarContext: String?) -> String {
+    private static func prompt(recent: [CloudNote], now: Date, calendarContext: String?,
+                               trackedTasksBlock: String = "") -> String {
         let today = todayString(now)
 
         // The user's LIVE calendar (last 7 days + next 24h, ALL events), pre-fetched as text so PART 1
@@ -246,6 +252,32 @@ actor Proactive {
             context, not a checklist — surface an item only when it genuinely deserves attention.
 
             \(ctx)
+
+            """
+        }()
+
+        // The user-maintained Tracked Tasks file (vault root). Empty on a fresh install or until the
+        // user marks anything; the block is omitted entirely then. When present it carries the
+        // user's own status decisions about prior proactive suggestions — the strongest possible
+        // signal that a would-be candidate is no longer relevant.
+        let trackedBlock: String = {
+            let body = trackedTasksBlock.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { return "" }
+            return """
+
+            ## TRACKED TASKS (the user's own status — non-negotiable filter)
+            The user maintains this list of tasks and their current status. Treat it as ground truth \
+            about what's already been handled:
+            - **Closed** tasks are DONE — frequently resolved off the computer (a phone call, an \
+            in-person conversation, an offline errand). NEVER surface a candidate that matches a \
+            closed task; the user has already told you it's handled.
+            - **On Hold** tasks are paused pending an external trigger (waiting on someone, a future \
+            date, a dependency). Don't surface them as new — but if the summaries show their trigger \
+            shifted (a reply arrived, the date passed), the resurface is the win.
+            - **Open** tasks are ones the user is actively tracking; treat as known-active, not new \
+            suggestions.
+
+            \(body)
 
             """
         }()
@@ -375,7 +407,7 @@ actor Proactive {
 
         STYLE: never use an em dash (—) in any text field; use a semicolon, colon, or comma instead.
 
-        \(calendarBlock)The last \(lookbackDays) days of summaries follow.
+        \(calendarBlock)\(trackedBlock)The last \(lookbackDays) days of summaries follow.
 
         ---
 

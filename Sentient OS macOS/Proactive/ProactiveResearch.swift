@@ -135,7 +135,12 @@ actor ProactiveResearch {
         let vault = VaultGenerator.vaultRoot
         guard FileManager.default.fileExists(atPath: vault.path) else { throw ResError.noVault }
 
-        var inv = CodexCLI.Invocation(prompt: Self.prompt(items: items, recent: recent, now: now, calendarContext: calendarContext))
+        // The user-maintained Tracked Tasks file — read here so PART 2 can drop a would-be card
+        // whose underlying task the user has already marked closed (often resolved off the computer).
+        let trackedTasksBlock = await TaskTracker.shared.renderForPrompt()
+
+        var inv = CodexCLI.Invocation(prompt: Self.prompt(items: items, recent: recent, now: now, calendarContext: calendarContext,
+                                                          trackedTasksBlock: trackedTasksBlock))
         inv.feature = "proactive-research"
         inv.effort = .high                  // gpt-5.6-sol → high (accuracy + the prepared draft are the product)
         inv.sandbox = .readOnly             // verifies + stages — never sends, drafts into a provider, or acts
@@ -268,7 +273,8 @@ actor ProactiveResearch {
 
     // MARK: The prompt — verify THEN prepare, accuracy-obsessed, never fires
 
-    private static func prompt(items: [ActionItem], recent: [CloudNote], now: Date, calendarContext: String?) -> String {
+    private static func prompt(items: [ActionItem], recent: [CloudNote], now: Date, calendarContext: String?,
+                               trackedTasksBlock: String = "") -> String {
         let today = Proactive.todayString(now)   // date + clock time + tz (shared with PART 1)
         var lines: [String] = []
         lines.reserveCapacity(items.count)
@@ -297,6 +303,28 @@ actor ProactiveResearch {
             tool to read a specific event in more detail if one is connected.
 
             \(ctx)
+            """
+        }()
+
+        // The user-maintained Tracked Tasks file (vault root). Carries status (open / on hold /
+        // closed) for tasks the user has explicitly tracked. The strongest "this candidate is stale"
+        // signal — a Closed entry means the user has already handled it, frequently off the computer.
+        let trackedBlock: String = {
+            let body = trackedTasksBlock.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { return "" }
+            return """
+
+            ## TRACKED TASKS (the user's own status — drops trump survival)
+            The user maintains this list. Treat each entry as the user's own verdict on the task:
+            - **Closed** = resolved (often off the computer). DROP any candidate whose underlying \
+            task is in Closed, no matter how strong the verify — the user has already told you it's \
+            done.
+            - **On Hold** = paused pending an external trigger. Keep on hold unless verify surfaced \
+            the trigger (a reply, a date passing) — then it's the resurface the user wants.
+            - **Open** = actively tracked. Reinforces (not replaces) a matching candidate.
+
+            \(body)
+
             """
         }()
 
@@ -496,6 +524,7 @@ actor ProactiveResearch {
         right up to the fire line, and stop there.
 
         \(calendarBlock)
+        \(trackedBlock)
         \(summariesBlock)
         The action items to research and prepare follow.
 

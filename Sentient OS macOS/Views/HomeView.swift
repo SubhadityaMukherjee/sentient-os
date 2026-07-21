@@ -65,6 +65,7 @@ struct HomeView: View {
     @State private var showIMessagePicker = false
     @State private var showGmailConnect = false
     @State private var showCalendarConnect = false
+    @State private var showTrackedTasks = false
     /// The morning-after caution (last night's scheduled run hit a known snag) — nil = no banner.
     @State private var caution: OvernightCaution.Record?
     /// The LIVE health issue (essential perms · codex · computer use) — HealthCaution's ladder;
@@ -148,6 +149,7 @@ struct HomeView: View {
         // Gmail / Calendar connect sheets — the SAME sheets Dev Tools opens (connect / select / remove).
         .sheet(isPresented: $showGmailConnect) { CloudConnectSheet(.gmail) }
         .sheet(isPresented: $showCalendarConnect) { CloudConnectSheet(.calendar) }
+        .sheet(isPresented: $showTrackedTasks) { TrackedTasksView() }
     }
 
     // MARK: Chrome — the top-bar nav + the editorial greeting
@@ -279,6 +281,7 @@ struct HomeView: View {
                         modelMissing: modelMissing,
                         lastRun: lastRunLabel,
                         onAnalyze: { showAnalysis = false; onAnalyze() },
+                        onTrackedTasks: { showAnalysis = false; showTrackedTasks = true },
                         onPickWhatsApp: { showAnalysis = false; showWhatsAppPicker = true },
                         onPickIMessage: { showAnalysis = false; showIMessagePicker = true },
                         onPickGmail: { showAnalysis = false; showGmailConnect = true },
@@ -326,6 +329,7 @@ struct HomeView: View {
                     },
                     onStop: { model.stopRun(item.element.id) },
                     onClear: { model.clearCard(item.element.id) },
+                    onMarkClosed: { model.markCardClosed(item.element.id) },
                     onFling: { model.dismiss(item.element.id, toward: $0) })
             }
         }
@@ -798,6 +802,21 @@ final class ForYouModel {
                                    height: -CGFloat.random(in: 350...560)))
     }
 
+    /// The card's ✓ — the task is done, often resolved OFF the computer (a phone call, an in-person
+    /// yes, an offline errand). Records it to Tracked Tasks as Closed (so the proactive judge won't
+    /// resurface it next cycle), drops it from the persisted deck, and plays the same fly-away.
+    /// The note is left blank — the user can flesh it out later in the Tracked Tasks window.
+    func markCardClosed(_ id: String) {
+        let title = entry(id)?.b.title ?? id
+        Task {
+            await TaskTracker.shared.add(title: title, status: .closed,
+                                         note: "marked done from a card", date: Date())
+        }
+        removeFromLatest(id)
+        dismiss(id, toward: CGSize(width: CGFloat.random(in: 250...520),
+                                   height: -CGFloat.random(in: 350...560)))
+    }
+
     /// A copy of a PreparedAction with new `preparedContent` + `recipient` (the rest unchanged).
     private static func replacing(_ a: PreparedAction, content: String, recipient: String) -> PreparedAction {
         PreparedAction(title: a.title, method: a.method, target: a.target, urgency: a.urgency,
@@ -837,6 +856,7 @@ private struct DealtCard: View {
     var onOpenEnvelope: () -> Void
     var onStop: () -> Void
     var onClear: () -> Void
+    var onMarkClosed: () -> Void
     var onFling: (CGSize) -> Void
 
     @State private var drag: CGSize = .zero
@@ -847,6 +867,7 @@ private struct DealtCard: View {
                      onOffer: onOffer, onDetail: onDetail, onOpenEnvelope: onOpenEnvelope,
                      liveLines: entry.liveLines, onStop: entry.action != nil ? onStop : nil,
                      onClear: entry.action != nil ? onClear : nil,
+                     onMarkClosed: entry.action != nil ? onMarkClosed : nil,
                      fireDimmed: fireDimmed)
             .rotationEffect(.degrees(j.rot + drag.width / 24))
             .scaleEffect(entry.dealt ? 1 : 0.7)
