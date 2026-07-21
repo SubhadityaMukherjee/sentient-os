@@ -43,8 +43,14 @@ enum FactoryReset {
         d.removeObject(forKey: OvernightScheduler.firstCycleAtKey)
         d.removeObject(forKey: OvernightScheduler.autoEnableFiredKey)
         d.removeObject(forKey: OvernightScheduler.prodEnabledKey)
+        // Realtime scheduler starts over too: prod flag off, "what's new" cursor cleared (the next
+        // tick after onboarding redoes sees the whole fresh CycleStore as new — fine, the user
+        // explicitly reset).
+        d.removeObject(forKey: RealtimeScheduler.enabledKey)
+        d.removeObject(forKey: RealtimeScheduler.lastRunAtKey)
         appState?.scheduler.needsSchedulerSetup = false
         appState?.scheduler.reevaluate()                // prod flag is gone → stops the loop + cancels the armed wake
+        appState?.realtimeScheduler.reevaluate()        // prod flag gone → stops the 20-min loop
         appState?.hasCompletedOnboarding = false        // live flip (didSet re-persists false)
         Log("FactoryReset: wiped cycle store + knowledge base + proactive traces + lifetime counters + cloud mirror copy + scheduler state · rewound to onboarding")
     }

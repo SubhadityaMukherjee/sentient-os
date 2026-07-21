@@ -8,14 +8,14 @@
 //  The proactive pipeline runs in three steps, each its own prompt: PART 1 (this file) finds the top
 //  action items, PART 2 researches/verifies them (Gmail MCP + web + the knowledge base), PART 3 acts.
 //  PART 1 is deliberately SUMMARIES-ONLY and hermetic: the cloud model (Codex, gpt-5.6-sol, high effort)
-//  reads ONLY the last 7 days of survivor summaries from EVERY source — files, WhatsApp, iMessage,
+//  reads ONLY the last 30 days of survivor summaries from EVERY source — files, WhatsApp, iMessage,
 //  Apple Notes, Calendar, Gmail — over stdin (no file/web/MCP tools), and returns the up-to-5 most
 //  important, most time-sensitive ACTION ITEMS (ranked, `--output-schema`). The deep grounding against
 //  the vault and live sources is PART 2's job, not this one. PART 1 only FINDS and RANKS — it does not
 //  verify, write, schedule, or notify. Dev-button-triggered for now (the scheduler calls it later).
 //
 //  Key methods:
-//   - findActionItems(from:now:)  → [ActionItem]   (windows to 7 days of summaries, runs Codex)
+//   - findActionItems(from:now:)  → [ActionItem]   (windows to 30 days of summaries, runs Codex)
 //
 //  Doc: Documentation/Proactive Intelligence (Judge).md
 //
@@ -45,7 +45,7 @@ actor Proactive {
     /// against the live world. There is no count cap on either stage — quality is the only filter,
     /// decided by the model. (Previously PART 1 capped at 8 candidates and PART 2 at 5 ready cards;
     /// both were lifted so the user sees every genuine task.)
-    static let lookbackDays = 7
+    static let lookbackDays = 30
     static let maxItems = 8   // kept as a label only — no longer enforced; see findActionItems
 
     enum ProError: LocalizedError {
@@ -59,6 +59,20 @@ actor Proactive {
             case .failed(let m):     return m
             }
         }
+    }
+
+    /// How thorough this judge run is. `.full` is the 3 AM / Analyze Now path — high-effort, long
+    /// timeout. `.fast` is the real-time triage path — medium-effort, short timeout, so a tick can
+    /// pick up new summaries in well under a minute. The PROMPT is identical; only the invocation
+    /// tuning (feature label, effort, timeout) changes.
+    enum RunMode: Sendable {
+        case full
+        case fast
+
+        var feature: String { self == .fast ? "proactive-realtime" : "proactive" }
+        var effort: CodexCLI.Effort { self == .fast ? .medium : .high }
+        var timeout: TimeInterval { self == .fast ? 300 : 1_200 }
+        var label: String { self == .fast ? "FAST" : "FULL" }
     }
 
     // MARK: Summary windowing (shared with PART 2 so both reason over the SAME corpus)
@@ -119,12 +133,13 @@ actor Proactive {
 
     // MARK: The judge
 
-    /// Find the top action items across the last week of summaries. PART 1 is summaries-only and
+    /// Find the top action items across the last 30 days of summaries. PART 1 is summaries-only and
     /// hermetic — no file/web/MCP tools (PART 2 does the deep research). Returns the ranked list; it
     /// does not verify, write, or notify. Throws on no-recent / usage-limit / failure so the caller
     /// can surface a clear status.
     func findActionItems(from notes: [CloudNote], now: Date = Date(),
                          calendarContext: String? = nil,
+                         mode: RunMode = .full,
                          onLine: (@Sendable (String) -> Void)? = nil) async throws -> [ActionItem] {
         // 1. Window the summaries to the last N days (shared with PART 2 via Self.recent).
         let recent = Self.recent(from: notes, now: now)
@@ -143,20 +158,20 @@ actor Proactive {
 
         var inv = CodexCLI.Invocation(prompt: Self.prompt(recent: recent, now: now, calendarContext: calendarContext,
                                                           trackedTasksBlock: trackedTasksBlock))
-        inv.feature = "proactive"
-        inv.effort = .high                  // gpt-5.6-sol → high (this judgment is the product)
+        inv.feature = mode.feature            // "proactive" / "proactive-realtime" (telemetry separation)
+        inv.effort = mode.effort              // .high for FULL · .medium for FAST (the real-time tradeoff)
         inv.sandbox = .readOnly             // never writes or acts
         inv.cwd = scratch.path              // neutral empty dir — nothing to read
         inv.webSearch = false               // summaries-only; web research is PART 2
         inv.includeUserConfig = false       // hermetic — no user MCP servers (Gmail is PART 2)
         inv.outputSchema = Self.schema
-        inv.timeout = 1_200                 // deep reasoning can run long
+        inv.timeout = mode.timeout          // FULL: 1200s deep reasoning · FAST: 300s triage
 
-        Log("Proactive.judge: \(recent.count) summaries in the last \(Self.lookbackDays)d → asking Codex (summaries-only, hermetic)…")
+        Log("Proactive.judge (\(mode.label)): \(recent.count) summaries in the last \(Self.lookbackDays)d → asking Codex (summaries-only, hermetic)…")
         do {
             let env = try await CodexCLI.shared.run(inv, onLine: onLine)
             let items = Self.parse(env.result)   // no count cap — every genuine candidate continues to PART 2
-            Log("Proactive.judge: ✅ \(items.count) action item(s) (turns \(env.numTurns ?? -1), \(env.outputTokens ?? -1) out-tokens)")
+            Log("Proactive.judge (\(mode.label)): ✅ \(items.count) action item(s) (turns \(env.numTurns ?? -1), \(env.outputTokens ?? -1) out-tokens)")
             #if DEBUG   // B7: title/action/importance/sources are the user's life — DEBUG-only so it can
                         // never become a Release breadcrumb (Sentry is Release-only).
             for (i, it) in items.enumerated() {
@@ -323,7 +338,7 @@ actor Proactive {
         use (or any other tool) to verify anything — you judge from the summaries alone; acting on \
         the user's Mac belongs only to a later step the user explicitly fires.
 
-        ## YOUR INPUT: the last 7 days of summaries
+        ## YOUR INPUT: the last 30 days of summaries
         The last \(lookbackDays) days of summaries (at the end of this message) are your ONLY input, \
         from EVERY source — files, WhatsApp, iMessage, Apple Notes, Calendar, and Gmail. Each line is \
         `#<n> · [source] location · date` then `Title — summary`. Scan EVERY source thoroughly — a \

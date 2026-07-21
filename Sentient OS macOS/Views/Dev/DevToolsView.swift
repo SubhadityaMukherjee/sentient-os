@@ -71,6 +71,10 @@ struct DevToolsView: View {
     @AppStorage("dbg.run.notes")     private var runNotes = false
     @AppStorage("dbg.run.appleMail") private var runAppleMail = false
 
+    // Realtime scheduler — dev toggle + interval override + "fire now" button.
+    @AppStorage(RealtimeScheduler.devEnabledKey) private var realtimeEnabled = false
+    @AppStorage(RealtimeScheduler.intervalKey) private var realtimeInterval: Double = 0
+
     @State private var run = DevRunModel()
     @State private var deviceJob: DeviceJob?
     @State private var showChatPicker = false
@@ -120,7 +124,48 @@ struct DevToolsView: View {
 
     // MARK: Overnight processing
 
-    /// One door into the OVERNIGHT PROCESSING window — all the fiddly controls (helper approval,
+    // MARK: Realtime
+
+    /// Inline realtime cockpit: dev toggle + interval override + "fire now" button. Lighter than the
+    /// overnight window — no helper/login dependencies, just a periodic in-app tick.
+    private var realtimeSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("REALTIME TICK").font(.caption2.weight(.bold)).tracking(2).foregroundStyle(Theme.faint)
+            HStack(spacing: 12) {
+                Toggle(isOn: $realtimeEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Run realtime ticks").font(.callout.weight(.medium)).foregroundStyle(.white)
+                        Text("Every ~20 min while the app is open. Fast judge + research on high-urgency survivors. Doesn't touch the 3 AM knowledge-base fold.")
+                            .font(.caption2).foregroundStyle(Theme.faint)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .onChange(of: realtimeEnabled) { _, _ in appState.realtimeScheduler.reevaluate() }
+                Spacer()
+                Button("Fire realtime now") { appState.realtimeScheduler.fireNow() }
+                    .buttonStyle(.bordered)
+            }
+            HStack(spacing: 8) {
+                Text("interval:").font(.caption2).foregroundStyle(.secondary)
+                Picker("", selection: $realtimeInterval) {
+                    Text("20m").tag(0.0)
+                    Text("5m").tag(300.0)
+                    Text("1m").tag(60.0)
+                }
+                .pickerStyle(.segmented).frame(width: 180).labelsHidden()
+                .onChange(of: realtimeInterval) { _, _ in appState.realtimeScheduler.reevaluate() }
+                Spacer()
+                Text(appState.realtimeScheduler.statusLine)
+                    .font(.caption2.monospaced()).foregroundStyle(Theme.faint)
+            }
+        }
+        .padding(12)
+        .background(.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    // MARK: Overnight processing
     /// launch-at-login, the 14h auto-enable, manual arm) live there (OvernightDevView), not inline.
     private var overnightSection: some View {
         Button { openWindow(id: OvernightDevView.windowID) } label: {
@@ -241,6 +286,7 @@ struct DevToolsView: View {
                 VStack(spacing: 22) {
                     sourcePicker
                     overnightSection
+                    realtimeSection
 
                     if Self.modelPath == nil {
                         Text("On-device model not found — place \(ModelLocator.fileName) next to the .xcodeproj, or set SENTIENT_MODEL_PATH.")

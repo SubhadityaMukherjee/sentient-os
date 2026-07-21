@@ -180,4 +180,86 @@ actor ProactiveCycle {
         progress(.failed(failure))
         return failure
     }
+
+    // MARK: Realtime tick (additive — does NOT touch the KB / mirror / GiftLetter / wipe)
+
+    /// A lightweight, additive realtime tick: FAST judge on the given notes (the ones new since the
+    /// last realtime run), then research + prepare on the HIGH-URGENCY survivors only, then merge
+    /// those prepared cards into the existing deck (deduped by title). Nothing else runs — the
+    /// knowledge base, MCP mirror, GiftLetter, and the CycleStore wipe stay owned by the 3 AM cycle.
+    /// Medium/low urgency items are detected but not staged as cards in v1 (they would need a
+    /// research pass to be safely fireable).
+    ///
+    /// `progress` is optional — pass nil for the unattended scheduler tick; pass a closure for the
+    /// dev "Fire realtime now" button's live UI. Returns nil on success (or a benign no-recent),
+    /// or the classified failure if a step errored. Never surfaces a morning-after caution (only
+    /// `scheduled: true` runs do — the 3 AM cycle owns that signal).
+    @discardableResult
+    func runRealtimeIncrement(newNotes: [CloudNote],
+                              calendarContext: String? = nil,
+                              progress: (@Sendable (ProactiveCyclePhase) -> Void)? = nil,
+                              onLine: (@Sendable (String) -> Void)? = nil) async -> CycleFailure? {
+        PipelineActivity.begin()                 // mutual exclusion with full cycles + Analyze Now
+        defer { PipelineActivity.end() }
+        let noop: @Sendable (ProactiveCyclePhase) -> Void = { _ in }
+        let report = progress ?? noop
+
+        // 1) FAST judge over the new notes only.
+        report(.deciding)
+        let items: [ActionItem]
+        do {
+            items = try await Proactive.shared.findActionItems(from: newNotes,
+                                                               calendarContext: calendarContext,
+                                                               mode: .fast,
+                                                               onLine: onLine)
+        } catch Proactive.ProError.noRecent {
+            // Nothing new enough — silent success. The deck is unchanged.
+            report(.done(ready: ProactiveResearch.latest()?.ready.count ?? 0))
+            return nil
+        } catch {
+            return await Self.fail("Realtime judge: \(Self.msg(error))", error: error,
+                                   scheduled: false, progress: report)
+        }
+        Analytics.signal("Proactive.realtimeDecided", parameters: ["items": "\(items.count)"])
+
+        // 2) Filter to high-urgency survivors — only those earn a full research+prepare pass.
+        let highUrgency = items.filter { $0.urgency == .high }
+        Log("Proactive.realtime: \(items.count) item(s) · \(highUrgency.count) high-urgency")
+        guard !highUrgency.isEmpty else {
+            // Detected items but none high-urgency — don't burn research quota. The deck is unchanged.
+            report(.done(ready: ProactiveResearch.latest()?.ready.count ?? 0))
+            return nil
+        }
+
+        // 3) Full research + prepare on ONLY the high-urgency subset.
+        report(.researching(highUrgency.count))
+        do {
+            let result = try await ProactiveResearch.shared.researchAndPrepare(items: highUrgency,
+                                                                                notes: newNotes,
+                                                                                calendarContext: calendarContext,
+                                                                                onLine: onLine)
+            Analytics.signal("Proactive.realtimePrepared",
+                             parameters: ["ready": "\(result.ready.count)", "dropped": "\(result.dropped.count)"],
+                             tier: .core)
+            // 4) Merge the new ready cards into the existing deck (dedup by title).
+            Self.mergeIntoLatest(result)
+        } catch {
+            return await Self.fail("Realtime prepare: \(Self.msg(error))", error: error,
+                                   scheduled: false, progress: report)
+        }
+
+        report(.done(ready: ProactiveResearch.latest()?.ready.count ?? 0))
+        return nil
+    }
+
+    /// Merge incoming ready cards into the persisted deck. New cards REPLACE any existing card with
+    /// the same title (the realtime run is more recent and may have applied corrections); other
+    /// existing cards survive untouched. Dropped items append to the existing dropped list.
+    static func mergeIntoLatest(_ incoming: ReadyResult) {
+        let current = ProactiveResearch.latest() ?? ReadyResult(ready: [], dropped: [])
+        let incomingTitles = Set(incoming.ready.map { $0.title })
+        let keptCurrent = current.ready.filter { !incomingTitles.contains($0.title) }
+        let mergedDropped = current.dropped + incoming.dropped
+        ProactiveResearch.saveLatest(ReadyResult(ready: keptCurrent + incoming.ready, dropped: mergedDropped))
+    }
 }

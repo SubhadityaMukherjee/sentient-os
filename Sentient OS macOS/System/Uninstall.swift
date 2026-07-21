@@ -63,10 +63,15 @@ enum Uninstall {
         let d = UserDefaults.standard
         let schedulerFlags = (dev: d.bool(forKey: OvernightScheduler.enabledKey),
                               prod: d.bool(forKey: OvernightScheduler.prodEnabledKey))
+        let realtimeFlags = (dev: d.bool(forKey: RealtimeScheduler.devEnabledKey),
+                             prod: d.bool(forKey: RealtimeScheduler.enabledKey))
         d.removeObject(forKey: OvernightScheduler.enabledKey)
         d.removeObject(forKey: OvernightScheduler.prodEnabledKey)
+        d.removeObject(forKey: RealtimeScheduler.enabledKey)
+        d.removeObject(forKey: RealtimeScheduler.devEnabledKey)
         appState?.scheduler.needsSchedulerSetup = false
         appState?.scheduler.reevaluate()   // flags gone → stops the loop + cancels the armed wake
+        appState?.realtimeScheduler.reevaluate()   // flags gone → stops the 20-min loop
 
         // The root daemon — the ONLY stage that can be declined, so it runs before anything
         // irreversible. One native password prompt tears down the plist, the armed wake, and the
@@ -82,7 +87,10 @@ enum Uninstall {
             case .cancel:
                 if schedulerFlags.dev { d.set(true, forKey: OvernightScheduler.enabledKey) }
                 if schedulerFlags.prod { d.set(true, forKey: OvernightScheduler.prodEnabledKey) }
+                if realtimeFlags.dev { d.set(true, forKey: RealtimeScheduler.devEnabledKey) }
+                if realtimeFlags.prod { d.set(true, forKey: RealtimeScheduler.enabledKey) }
                 appState?.scheduler.reevaluate()
+                appState?.realtimeScheduler.reevaluate()
                 appState?.isUninstalling = false   // the home re-deals its deck
                 Log("Uninstall: cancelled at the admin prompt — nothing removed")
                 return false
