@@ -26,9 +26,11 @@ struct BriefingCard: View {
     var onOpenEnvelope: () -> Void
     var liveLines: [String] = []       // real cards: codex's live play-by-play (empty → demo theater)
     var onStop: (() -> Void)? = nil    // real cards: the per-card STOP
+    var onClear: (() -> Void)? = nil   // real cards: the × that dismisses a card without firing
     var fireDimmed = false             // one task at a time: another task is running → the CTA waits
 
     @State private var hovering = false
+    @State private var clearHover = false
 
     static let width: CGFloat = 332
 
@@ -65,6 +67,27 @@ struct BriefingCard: View {
         .background(Theme.Ink.cardBG, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
             .strokeBorder(border, lineWidth: 1))
+        .overlay(alignment: .topTrailing) {
+            if phase == .offer, let onClear {
+                // The × that dismisses a card without firing — for the case where the user already
+                // did the task out-of-band, or just doesn't want it taking a slot. Offer-only: sealed
+                // is the welcome envelope, working has STOP, done is mid-fly-away. Quietest entry
+                // point on the card, mirror of STOP's typography but lower-contrast (a decline, not
+                // an interrupt).
+                Button(action: onClear) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.white.opacity(clearHover ? 0.85 : 0.42))
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { clearHover = $0 }
+                .padding(.top, 6)
+                .padding(.trailing, 6)
+                .transition(.opacity)
+            }
+        }
         .animation(.spring(response: 0.45, dampingFraction: 0.85), value: phase)
         // The whole offer face expands the card — the buttons (fire CTA, "read more") sit above
         // this ancestor tap in hit-testing, so they keep their own actions.

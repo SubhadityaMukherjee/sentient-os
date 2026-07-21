@@ -325,6 +325,7 @@ struct HomeView: View {
                         openLetter(item.element.b)
                     },
                     onStop: { model.stopRun(item.element.id) },
+                    onClear: { model.clearCard(item.element.id) },
                     onFling: { model.dismiss(item.element.id, toward: $0) })
             }
         }
@@ -789,6 +790,14 @@ final class ForYouModel {
                                                  dropped: result.dropped))
     }
 
+    /// The card's × — user-initiated dismiss without firing. Persists the removal (a re-deal won't
+    /// resurrect it) then plays the same fly-away theater as a successful fire, so the feel matches.
+    func clearCard(_ id: String) {
+        removeFromLatest(id)
+        dismiss(id, toward: CGSize(width: CGFloat.random(in: 250...520),
+                                   height: -CGFloat.random(in: 350...560)))
+    }
+
     /// A copy of a PreparedAction with new `preparedContent` + `recipient` (the rest unchanged).
     private static func replacing(_ a: PreparedAction, content: String, recipient: String) -> PreparedAction {
         PreparedAction(title: a.title, method: a.method, target: a.target, urgency: a.urgency,
@@ -827,6 +836,7 @@ private struct DealtCard: View {
     var onDetail: () -> Void
     var onOpenEnvelope: () -> Void
     var onStop: () -> Void
+    var onClear: () -> Void
     var onFling: (CGSize) -> Void
 
     @State private var drag: CGSize = .zero
@@ -836,6 +846,7 @@ private struct DealtCard: View {
         BriefingCard(briefing: entry.b, phase: entry.phase,
                      onOffer: onOffer, onDetail: onDetail, onOpenEnvelope: onOpenEnvelope,
                      liveLines: entry.liveLines, onStop: entry.action != nil ? onStop : nil,
+                     onClear: entry.action != nil ? onClear : nil,
                      fireDimmed: fireDimmed)
             .rotationEffect(.degrees(j.rot + drag.width / 24))
             .scaleEffect(entry.dealt ? 1 : 0.7)

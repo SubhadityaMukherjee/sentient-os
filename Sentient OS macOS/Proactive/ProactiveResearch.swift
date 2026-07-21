@@ -97,9 +97,10 @@ actor ProactiveResearch {
 
     static let shared = ProactiveResearch()
 
-    /// The most ready cards PART 2 ever returns. It verifies PART 1's wider net (up to 8) and prunes
-    /// to the strongest few — scarcity is taste. Enforced in the prompt AND as a code backstop.
-    static let maxReady = 5
+    /// PART 2 returns every verified-ready card — there is no count cap. The model is trusted to
+    /// prune on quality (drop the stale and the weak), not on quantity. `maxItems` from PART 1 is
+    /// the implicit upper bound on what could land here.
+    static let maxReady = 5   // kept as a label only — no longer enforced; see researchAndPrepare
 
     enum ResError: LocalizedError {
         case noItems
@@ -152,8 +153,10 @@ actor ProactiveResearch {
         do {
             let env = try await CodexCLI.shared.run(inv, onLine: onLine)
             let parsed = Self.parse(env.result)
-            // Backstop the prompt's prune: PART 2 returns at most maxReady (5) of the strongest cards.
-            let result = ReadyResult(ready: Array(parsed.ready.prefix(Self.maxReady)), dropped: parsed.dropped)
+            // No code-side cap: every card the model verified + prepared survives. The prompt asks for
+            // quality-based pruning only (drop stale/weak); a count cap would silently hide cards the
+            // user asked to see.
+            let result = ReadyResult(ready: parsed.ready, dropped: parsed.dropped)
             Log("ProactiveResearch: ✅ ready \(result.ready.count), dropped \(result.dropped.count) (turns \(env.numTurns ?? -1), \(env.outputTokens ?? -1) out-tokens)")
             #if DEBUG   // B7: the per-item detail carries preparedContent/titles/recipes (the user's life) —
                         // DEBUG-only so it can NEVER become a Release breadcrumb (Sentry is Release-only).
@@ -486,11 +489,11 @@ actor ProactiveResearch {
         STYLE: in everything the user will read (title, card_summary, prepared_content, button_text, \
         review_note), never use an em dash (—); use a semicolon, colon, or comma instead.
 
-        You receive up to 8 candidate items. Return AT MOST \(Self.maxReady) READY cards — the \
-        strongest, most useful, most time-sensitive of what survives. Dropping a stale item is a \
-        success, not a failure; and if MORE than \(Self.maxReady) survive verification, keep only the \
-        \(Self.maxReady) strongest and cut the rest. Prepare everything you keep right up to the fire \
-        line, and stop there.
+        You receive up to 8 candidate items. There is NO count cap on READY cards: return EVERY \
+        item that survives verification and merits a card — the strongest, most useful, most \
+        time-sensitive of what holds up. Dropping a stale or weak item is a success, not a failure, \
+        so NEVER pad; but if many genuinely survive, keep all of them. Prepare everything you keep \
+        right up to the fire line, and stop there.
 
         \(calendarBlock)
         \(summariesBlock)
