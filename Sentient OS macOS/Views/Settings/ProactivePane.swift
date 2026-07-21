@@ -20,6 +20,8 @@ struct ProactivePane: View {
     @AppStorage("sidekick.hotkey") private var sidekickHotkey = "rightCommand"
     @AppStorage(CustomInstructions.sidekickKey) private var sidekickContext = ""
     @AppStorage(ComputerUseSpeed.key) private var speedRaw = ComputerUseSpeed.faster.rawValue
+    @AppStorage(RealtimeScheduler.enabledKey) private var realtimeEnabled = false
+    @Environment(AppState.self) private var appState
 
     var body: some View {
         SettingsPane(title: "Proactive & Sidekick",
@@ -30,6 +32,27 @@ struct ProactivePane: View {
                         SettingsProse("Every morning, Sentient surfaces a few things worth doing, already done and waiting for your go. Tell it what you care about, and what to skip.")
                         SettingsTextBox(placeholder: "e.g. Don't give me suggestions about Chase Bank alerts.",
                                         text: $proactiveInstructions)
+                    }
+                }
+                SettingsHairline(opacity: 0.12)
+                    .padding(.vertical, -7)   // sit tighter than the pane's 30pt group rhythm
+                SettingsGroup(label: "Real-time recommendations") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle(isOn: $realtimeEnabled) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Surface urgent things through the day").font(.callout)
+                                Text("While Sentient is open, check for new mail, files, and messages about every 20 minutes. High-urgency items appear as cards immediately, instead of waiting for tomorrow morning.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .toggleStyle(.switch)
+                        .onChange(of: realtimeEnabled) { _, _ in appState.realtimeScheduler.reevaluate() }
+                        if CodexAuth.knowledgeBaseOnly {
+                            Text("Connect Claude or ChatGPT Plus in Settings → Connect AIs to enable real-time recommendations.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
                 SettingsHairline(opacity: 0.12)

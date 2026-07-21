@@ -34,6 +34,11 @@ final class AppState {
     /// The in-app scheduler — only ever runs while the app is alive (DEV TOOLS "Scheduled run").
     let scheduler = OvernightScheduler()
 
+    /// The periodic real-time scheduler — fires every ~20 min while the app is alive, catching new
+    /// summaries and running the additive realtime increment on them. Sibling to `scheduler`; same
+    /// lifetime (in-app only) and the same reevaluate-on-toggle pattern.
+    let realtimeScheduler = RealtimeScheduler()
+
     /// The "do this for me" brain: the right-⌘ hold-to-talk hotkey + voice + the one shared codex run
     /// + the notch's status phase. Both the home command bar and the hotkey drive this. (Notch Magic/)
     let commandCoordinator = CommandCoordinator()
@@ -70,6 +75,7 @@ final class AppState {
 
         scheduler.reevaluate()   // arm if the dev setting was left on; otherwise a no-op
         scheduler.maybeAutoEnable()   // 14h after initial: flip the overnight scheduler on (or arm the timer)
+        realtimeScheduler.reevaluate()   // start the 20-min realtime loop if production or dev flag is on
         // Always armed — knowledge-base-only (free/go) gating happens live at submit() inside
         // the coordinator: the notch experience still plays, the codex run just never fires.
         commandCoordinator.start()   // arm right-⌘ hold-to-talk + warm the speech model

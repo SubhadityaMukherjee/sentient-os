@@ -128,7 +128,7 @@ actor ProactiveResearch {
                             calendarContext: String? = nil,
                             onLine: (@Sendable (String) -> Void)? = nil) async throws -> ReadyResult {
         guard !items.isEmpty else { throw ResError.noItems }
-        let recent = Proactive.recent(from: notes, now: now)   // the SAME last-week corpus PART 1 saw
+        let recent = Proactive.recent(from: notes, now: now)   // the SAME last-month corpus PART 1 saw
 
         // The vault is a research surface, the source of the user's voice + the facts a draft/form
         // needs, AND the agent's cwd (Read/Glob/Grep over the knowledge base).
@@ -328,13 +328,13 @@ actor ProactiveResearch {
             """
         }()
 
-        // The FULL last-week summary corpus — the exact context PART 1 saw. PART 2 now gets it too, so it
+        // The FULL last-month summary corpus — the exact context PART 1 saw. PART 2 now gets it too, so it
         // can understand each item in full context instead of only PART 1's one-line distillation.
         let summariesBlock: String = {
             guard !recent.isEmpty else { return "" }
             return """
 
-            ## THE FULL LAST-WEEK CONTEXT — the SAME summaries PART 1 saw
+            ## THE FULL LAST-MONTH CONTEXT — the SAME summaries PART 1 saw
             Below is the ENTIRE corpus of the user's last \(Proactive.lookbackDays) days of summaries \
             across every source — the exact context PART 1 read when it picked the items. Use it as deep \
             background: understand each item in its full context, notice related signals PART 1 didn't \
@@ -348,7 +348,7 @@ actor ProactiveResearch {
 
         return """
         You are the **Research & Prepare** step of Sentient OS's Proactive Intelligence — PART 2 of 3, \
-        and the heart of the feature. PART 1 read the user's last week across every source and picked \
+        and the heart of the feature. PART 1 read the user's last month across every source and picked \
         the handful of ACTION ITEMS that *might* deserve their attention — but those were inferred from \
         short summaries that can be stale or imprecise. For EACH item you do two things, in order:
 
@@ -386,7 +386,7 @@ actor ProactiveResearch {
         it, use computer use to carry them out; that step is not you.
 
         ## YOUR SURFACES (all READ-ONLY — you only gather, never act)
-        You ALSO have the **full last-week summary corpus** (at the end of this message — the same \
+        You ALSO have the **full last-month summary corpus** (at the end of this message — the same \
         context PART 1 saw) as background. Beyond that, gather live from:
         1. **The knowledge base** — your working directory IS the user's whole life as an Obsidian-style \
         markdown vault. Read the root `README.md`, then grep/read the notes about the people, projects, \
