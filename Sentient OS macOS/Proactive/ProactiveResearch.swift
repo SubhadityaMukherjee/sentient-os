@@ -172,7 +172,10 @@ actor ProactiveResearch {
                 Log("  DROP \(d.title) — \(d.reason)")
             }
             #endif
-            Self.saveLatest(result)
+            // Merge with the existing deck instead of replacing. Cards the user has kept survive
+            // unless THIS run explicitly drops them (verified done/stale) or refreshes them (same
+            // title in `ready` — the fresh, verified version wins).
+            Self.mergeIntoLatest(result)
             return result
         } catch let CodexCLI.CLIError.usageLimit(message, _) {
             throw ResError.usageLimit(message)
@@ -202,6 +205,24 @@ actor ProactiveResearch {
 
     /// Forget the last prepared deck (the dev "Reset everything" path) — the home's "For You" empties.
     static func clear() { UserDefaults.standard.removeObject(forKey: latestKey) }
+
+    /// Merge `incoming` into the persisted deck. Cards already in the deck (which the user has kept,
+    /// not dismissed) survive UNLESS this run explicitly drops them (`incoming.dropped` — verified
+    /// done/stale, so they should leave) or refreshes them (same title in `incoming.ready` — the
+    /// new, freshly-verified version wins). New cards append. This is what makes a fresh Analyze
+    /// NOT wipe cards the user was still mid-review on.
+    static func mergeIntoLatest(_ incoming: ReadyResult) {
+        let current = Self.latest() ?? ReadyResult(ready: [], dropped: [])
+        let incomingReadyTitles = Set(incoming.ready.map { $0.title })
+        let droppedTitles = Set(incoming.dropped.map { $0.title })
+        let keptCurrent = current.ready.filter { c in
+            !incomingReadyTitles.contains(c.title) && !droppedTitles.contains(c.title)
+        }
+        // Trim duplicate drop entries (same title dropping again is noise).
+        let keptDropped = current.dropped.filter { !droppedTitles.contains($0.title) }
+        Self.saveLatest(ReadyResult(ready: keptCurrent + incoming.ready,
+                                    dropped: keptDropped + incoming.dropped))
+    }
 
     // MARK: Output schema (the `--output-schema` contract)
 
