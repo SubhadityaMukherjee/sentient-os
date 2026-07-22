@@ -209,10 +209,12 @@ actor ProactiveResearch {
     /// Merge `incoming` into the persisted deck. Cards already in the deck (which the user has kept,
     /// not dismissed) survive UNLESS this run explicitly drops them (`incoming.dropped` — verified
     /// done/stale, so they should leave) or refreshes them (same title in `incoming.ready` — the
-    /// new, freshly-verified version wins). New cards append. This is what makes a fresh Analyze
-    /// NOT wipe cards the user was still mid-review on.
+    /// new, freshly-verified version wins). New cards append. Items whose title the user has
+    /// previously dismissed (flicked) are filtered out — once dismissed, a task doesn't resurface
+    /// on the next cycle even if the judge independently re-finds it.
     static func mergeIntoLatest(_ incoming: ReadyResult) {
         let current = Self.latest() ?? ReadyResult(ready: [], dropped: [])
+        let dismissed = Self.dismissedTitles()
         let incomingReadyTitles = Set(incoming.ready.map { $0.title })
         let droppedTitles = Set(incoming.dropped.map { $0.title })
         let keptCurrent = current.ready.filter { c in
@@ -220,9 +222,35 @@ actor ProactiveResearch {
         }
         // Trim duplicate drop entries (same title dropping again is noise).
         let keptDropped = current.dropped.filter { !droppedTitles.contains($0.title) }
-        Self.saveLatest(ReadyResult(ready: keptCurrent + incoming.ready,
+        // Filter out any new ready card the user has dismissed before — protects against the judge
+        // re-finding the same item next cycle.
+        let freshReady = incoming.ready.filter { !dismissed.contains($0.title) }
+        Self.saveLatest(ReadyResult(ready: keptCurrent + freshReady,
                                     dropped: keptDropped + incoming.dropped))
     }
+
+    // MARK: Dismissed titles — flick persistence
+
+    private static let dismissedKey = "proactive.dismissedTitles"
+
+    /// The set of card titles the user has flicked away. They won't resurface on later merges
+    /// (next Analyze / realtime tick) even if the judge independently re-finds them. Use ✓ on a
+    /// card to also suppress at the judge level (Closed tasks are written to Tracked Tasks, which
+    /// the judge prompt explicitly suppresses).
+    static func dismissedTitles() -> Set<String> {
+        guard let arr = UserDefaults.standard.array(forKey: dismissedKey) as? [String] else { return [] }
+        return Set(arr)
+    }
+
+    /// Add a title to the dismissed set (called when the user flicks a card).
+    static func dismiss(_ title: String) {
+        var s = Self.dismissedTitles()
+        guard s.insert(title).inserted else { return }   // already dismissed — no-op
+        UserDefaults.standard.set(Array(s), forKey: dismissedKey)
+    }
+
+    /// Clear all dismissed titles (the dev "Reset everything" path lets everything resurface).
+    static func clearDismissed() { UserDefaults.standard.removeObject(forKey: dismissedKey) }
 
     // MARK: Output schema (the `--output-schema` contract)
 

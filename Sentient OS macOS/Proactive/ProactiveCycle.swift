@@ -226,20 +226,17 @@ actor ProactiveCycle {
         }
         Analytics.signal("Proactive.realtimeDecided", parameters: ["items": "\(items.count)"])
 
-        // 2) Filter to high-urgency survivors — only those earn a full research+prepare pass.
-        let highUrgency = items.filter { $0.urgency == .high }
-        Log("Proactive.realtime: \(items.count) item(s) · \(highUrgency.count) high-urgency")
-        guard !highUrgency.isEmpty else {
-            // Detected items but none high-urgency — don't burn research quota. The deck is unchanged.
+        // 2) Skip silently if the judge found nothing new. Otherwise research EVERY item — the user
+        //    wants coverage, including minimal/low-urgency tasks. researchAndPrepare merges its
+        //    result into the existing deck internally (preserving cards the user has kept).
+        guard !items.isEmpty else {
             report(.done(ready: ProactiveResearch.latest()?.ready.count ?? 0))
             return nil
         }
-
-        // 3) Full research + prepare on ONLY the high-urgency subset. researchAndPrepare merges
-        //    its result into the existing deck internally (preserving cards the user has kept).
-        report(.researching(highUrgency.count))
+        Log("Proactive.realtime: \(items.count) item(s)")
+        report(.researching(items.count))
         do {
-            let result = try await ProactiveResearch.shared.researchAndPrepare(items: highUrgency,
+            let result = try await ProactiveResearch.shared.researchAndPrepare(items: items,
                                                                                 notes: newNotes,
                                                                                 calendarContext: calendarContext,
                                                                                 onLine: onLine)

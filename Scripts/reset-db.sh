@@ -58,6 +58,7 @@ echo "▸ Clearing proactive / realtime UserDefaults..."
 for key in proactive.lastCycleAt \
            proactive.latestActionItems \
            proactive.latestReady \
+           proactive.dismissedTitles \
            proactive.giftLetter \
            realtime.lastRunAt; do
   defaults delete "$BUNDLE_ID" "$key" 2>/dev/null && echo "  cleared $key" || true

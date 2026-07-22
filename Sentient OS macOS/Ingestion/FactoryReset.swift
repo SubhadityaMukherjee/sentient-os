@@ -45,9 +45,11 @@ enum FactoryReset {
         d.removeObject(forKey: OvernightScheduler.prodEnabledKey)
         // Realtime scheduler starts over too: prod flag off, "what's new" cursor cleared (the next
         // tick after onboarding redoes sees the whole fresh CycleStore as new — fine, the user
-        // explicitly reset).
+        // explicitly reset). The dismissed-titles set also clears so every previously-flicked task
+        // can surface again on the next cycle.
         d.removeObject(forKey: RealtimeScheduler.enabledKey)
         d.removeObject(forKey: RealtimeScheduler.lastRunAtKey)
+        ProactiveResearch.clearDismissed()
         appState?.scheduler.needsSchedulerSetup = false
         appState?.scheduler.reevaluate()                // prod flag is gone → stops the loop + cancels the armed wake
         appState?.realtimeScheduler.reevaluate()        // prod flag gone → stops the 20-min loop

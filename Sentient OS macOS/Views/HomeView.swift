@@ -828,8 +828,11 @@ final class ForYouModel {
     }
 
     /// The card's × — user-initiated dismiss without firing. Persists the removal (a re-deal won't
-    /// resurrect it) then plays the same fly-away theater as a successful fire, so the feel matches.
+    /// resurrect it AND the next Analyze/realtime won't surface it again — the title is added to a
+    /// dismissed set so the judge can't re-introduce it), then plays the same fly-away theater as
+    /// a successful fire, so the feel matches.
     func clearCard(_ id: String) {
+        ProactiveResearch.dismiss(id)   // id == title; suppresses resurfacing on later merges
         removeFromLatest(id)
         dismiss(id, toward: CGSize(width: CGFloat.random(in: 250...520),
                                    height: -CGFloat.random(in: 350...560)))
