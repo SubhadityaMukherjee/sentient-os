@@ -310,10 +310,24 @@ struct HomeView: View {
     private func scatter(_ geo: GeometryProxy) -> some View {
         // kb-only: the lone gift envelope gets a fixed top-center perch (the preview note owns
         // the center beneath it). Any other population falls back to the normal scatter.
-        let slots = (kbOnly && model.entries.count == 1)
+        let count = model.entries.count
+        let slots = (kbOnly && count == 1)
             ? [CGPoint(x: geo.size.width / 2, y: geo.size.height * 0.24)]
-            : Self.slots(count: model.entries.count, in: geo.size)
-        return ZStack {
+            : Self.slots(count: count, in: geo.size)
+
+        // For 7+ cards the algorithmic grid produces more rows than the visible card zone — wrap
+        // the scatter in a vertical ScrollView with an content-sized ZStack so the extra rows
+        // scroll into view instead of piling on top of row 0.
+        let cardsPerRow = 3
+        let rowCount = max(2, Int(ceil(Double(count) / Double(cardsPerRow))))
+        // Each row is 0.46 × window-height tall (matches the original two-row spread); reserve a
+        // half-card below the last row's centre so the bottom card isn't clipped at the fold.
+        let rowHeight = geo.size.height * 0.46
+        let cardHalfHeight: CGFloat = 190
+        let contentHeight = max(geo.size.height, CGFloat(rowCount) * rowHeight + cardHalfHeight)
+        let needsScroll = count > 6
+
+        let deck = ZStack {
             ForEach(Array(model.entries.enumerated()), id: \.element.id) { item in
                 DealtCard(
                     entry: item.element,
@@ -333,27 +347,46 @@ struct HomeView: View {
                     onFling: { model.dismiss(item.element.id, toward: $0) })
             }
         }
+        .frame(width: geo.size.width, height: contentHeight)
+
+        if needsScroll {
+            // Vertical scroll only; the deck is wider than it is tall, and a horizontal scroll
+            // would fight the fling-to-dismiss gesture.
+            return AnyView(ScrollView([.vertical], showsIndicators: true) { deck }
+                .frame(width: geo.size.width, height: geo.size.height))
+        } else {
+            return AnyView(deck.frame(width: geo.size.width, height: geo.size.height))
+        }
     }
 
     /// Organic slot positions per population, laid into the CARD ZONE — the band between the
-    /// top chrome (nav + greeting) and the command-bar dock. The two rows cluster toward the
-    /// vertical centre with a tight, deliberate gap (one composed spread, not two stranded rows)
-    /// and a gentle stagger. Pinned, not gridded; reflows as cards leave. (y-fraction is WITHIN
-    /// the zone.) Convention: the LAST slot of every population is the rightmost/lowest one —
-    /// the welcome gift envelope always rides last in the deck, so that slot is its perch.
+    /// top chrome (nav + greeting) and the command-bar dock. 1–5 cards get hand-tuned compositions;
+    /// 6+ falls into an algorithmic 3-column grid that extends downward for any count (extra rows
+    /// scroll into view via the ScrollView wrapper in `scatter`). The LAST slot of every population
+    /// is the rightmost/lowest one — the welcome gift envelope always rides last in the deck.
+    /// (y-fraction is WITHIN the card zone.)
     private static func slots(count: Int, in size: CGSize) -> [CGPoint] {
         let top = size.height * 0.20
         let bottom = size.height * 0.86
         let h = bottom - top
         let f: [(CGFloat, CGFloat)]
         switch count {
-        case 6...: f = [(0.21, 0.24), (0.50, 0.20), (0.79, 0.20),
-                        (0.21, 0.72), (0.50, 0.70), (0.79, 0.66)]
         case 5:    f = [(0.22, 0.22), (0.50, 0.14), (0.78, 0.19), (0.34, 0.68), (0.66, 0.68)]
         case 4:    f = [(0.28, 0.22), (0.72, 0.22), (0.30, 0.68), (0.70, 0.68)]
         case 3:    f = [(0.24, 0.46), (0.50, 0.32), (0.76, 0.46)]
         case 2:    f = [(0.35, 0.44), (0.65, 0.44)]
-        default:   f = [(0.50, 0.42)]
+        case 1:    f = [(0.50, 0.42)]
+        default:
+            // 6+ cards: 3 columns × N rows. Row 0 sits at y-fraction 0.20, each subsequent row
+            // 0.48 below — so the original 6-card two-row spread reads identically, and extra
+            // rows extend into the scroll area below.
+            let xFractions: [CGFloat] = [0.21, 0.50, 0.79]
+            let rowHeightFraction: CGFloat = 0.48
+            f = (0..<count).map { i in
+                let row = i / 3
+                let col = i % 3
+                return (xFractions[col], 0.20 + CGFloat(row) * rowHeightFraction)
+            }
         }
         return f.map { CGPoint(x: $0.0 * size.width, y: top + $0.1 * h) }
     }
@@ -795,8 +828,11 @@ final class ForYouModel {
     }
 
     /// The card's × — user-initiated dismiss without firing. Persists the removal (a re-deal won't
-    /// resurrect it) then plays the same fly-away theater as a successful fire, so the feel matches.
+    /// resurrect it AND the next Analyze/realtime won't surface it again — the title is added to a
+    /// dismissed set so the judge can't re-introduce it), then plays the same fly-away theater as
+    /// a successful fire, so the feel matches.
     func clearCard(_ id: String) {
+        ProactiveResearch.dismiss(id)   // id == title; suppresses resurfacing on later merges
         removeFromLatest(id)
         dismiss(id, toward: CGSize(width: CGFloat.random(in: 250...520),
                                    height: -CGFloat.random(in: 350...560)))

@@ -141,7 +141,10 @@ actor ProactiveCycle {
             Analytics.signal("Proactive.decided", parameters: ["items": "\(items.count)"])
 
             if items.isEmpty {
-                ProactiveResearch.saveLatest(ReadyResult(ready: [], dropped: []))   // clear any stale cards
+                // Nothing new to act on — leave the existing deck intact. Previously this wiped the
+                // deck, which discarded cards the user had kept; the merge path on the non-empty
+                // branch is the new model.
+                Log("ProactiveCycle: no items this cycle — deck preserved")
             } else {
                 progress(.researching(items.count))
                 do {
@@ -151,13 +154,14 @@ actor ProactiveCycle {
                     Analytics.signal("Proactive.prepared", parameters: [
                         "ready": "\(result.ready.count)", "dropped": "\(result.dropped.count)"],
                         floatValue: Double(result.ready.count), tier: .core)
+                    // The deck was refreshed — a pre-existing gift's day is done. (The empty-items
+                    // branch keeps the gift: nothing new arrived, the user's state is preserved.)
+                    if giftPreexisted { GiftLetter.clear() }
                 } catch {
                     return await Self.fail("Preparing: \(Self.msg(error))", error: error,
                                            scheduled: scheduled, progress: progress)
                 }
             }
-            // The deck was replaced (new cards or a clean empty) — a pre-existing gift's day is done.
-            if giftPreexisted { GiftLetter.clear() }
         }
 
         // 4) Wipe this cycle's summaries — the knowledge base is the durable memory now. Success only.
@@ -222,27 +226,23 @@ actor ProactiveCycle {
         }
         Analytics.signal("Proactive.realtimeDecided", parameters: ["items": "\(items.count)"])
 
-        // 2) Filter to high-urgency survivors — only those earn a full research+prepare pass.
-        let highUrgency = items.filter { $0.urgency == .high }
-        Log("Proactive.realtime: \(items.count) item(s) · \(highUrgency.count) high-urgency")
-        guard !highUrgency.isEmpty else {
-            // Detected items but none high-urgency — don't burn research quota. The deck is unchanged.
+        // 2) Skip silently if the judge found nothing new. Otherwise research EVERY item — the user
+        //    wants coverage, including minimal/low-urgency tasks. researchAndPrepare merges its
+        //    result into the existing deck internally (preserving cards the user has kept).
+        guard !items.isEmpty else {
             report(.done(ready: ProactiveResearch.latest()?.ready.count ?? 0))
             return nil
         }
-
-        // 3) Full research + prepare on ONLY the high-urgency subset.
-        report(.researching(highUrgency.count))
+        Log("Proactive.realtime: \(items.count) item(s)")
+        report(.researching(items.count))
         do {
-            let result = try await ProactiveResearch.shared.researchAndPrepare(items: highUrgency,
+            let result = try await ProactiveResearch.shared.researchAndPrepare(items: items,
                                                                                 notes: newNotes,
                                                                                 calendarContext: calendarContext,
                                                                                 onLine: onLine)
             Analytics.signal("Proactive.realtimePrepared",
                              parameters: ["ready": "\(result.ready.count)", "dropped": "\(result.dropped.count)"],
                              tier: .core)
-            // 4) Merge the new ready cards into the existing deck (dedup by title).
-            Self.mergeIntoLatest(result)
         } catch {
             return await Self.fail("Realtime prepare: \(Self.msg(error))", error: error,
                                    scheduled: false, progress: report)
@@ -250,16 +250,5 @@ actor ProactiveCycle {
 
         report(.done(ready: ProactiveResearch.latest()?.ready.count ?? 0))
         return nil
-    }
-
-    /// Merge incoming ready cards into the persisted deck. New cards REPLACE any existing card with
-    /// the same title (the realtime run is more recent and may have applied corrections); other
-    /// existing cards survive untouched. Dropped items append to the existing dropped list.
-    static func mergeIntoLatest(_ incoming: ReadyResult) {
-        let current = ProactiveResearch.latest() ?? ReadyResult(ready: [], dropped: [])
-        let incomingTitles = Set(incoming.ready.map { $0.title })
-        let keptCurrent = current.ready.filter { !incomingTitles.contains($0.title) }
-        let mergedDropped = current.dropped + incoming.dropped
-        ProactiveResearch.saveLatest(ReadyResult(ready: keptCurrent + incoming.ready, dropped: mergedDropped))
     }
 }
