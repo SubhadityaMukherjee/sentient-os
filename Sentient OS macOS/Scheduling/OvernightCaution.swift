@@ -22,19 +22,16 @@ import os
 enum OvernightCaution {
 
     enum Kind: String, Codable {
-        case loggedOut      // codex had no working login when the night's cloud work started
-        case noInternet     // the Mac was offline, so the cloud legs couldn't run
-        case usageLimit     // the ChatGPT plan's window was exhausted mid-run
-        case inputTooLarge  // a prompt exceeded codex's turn-input cap (a canary — corpus
-                            // slicing budgets every prompt path, so this should never fire)
+        case endpointMissing   // no local LLM endpoint configured when the night's work started
+        case noInternet        // the Mac was offline, so the endpoint couldn't be reached
+        case failed            // the endpoint returned an error or timed out
 
         /// The banner line — quiet, first-person, honest about what happens next.
         var message: String {
             switch self {
-            case .loggedOut:  return "I couldn't work last night. Codex was signed out; log back in and I'll catch up tonight."
-            case .noInternet: return "No internet last night, so I couldn't do my overnight work. I'll try again tonight."
-            case .usageLimit: return "We hit ChatGPT's usage limit last night. I'll pick it up again tomorrow."
-            case .inputTooLarge: return "Last night's batch was more than ChatGPT accepts at once. Your analysis is saved; I'll try again tonight."
+            case .endpointMissing: return "I couldn't work last night — no local LLM endpoint is set. Configure one in Settings and I'll catch up tonight."
+            case .noInternet:      return "No internet last night, so I couldn't reach your local LLM. I'll try again tonight."
+            case .failed:          return "Last night's run hit an error from your local LLM. Your analysis is saved; I'll try again tonight."
             }
         }
     }
@@ -57,36 +54,23 @@ enum OvernightCaution {
         UserDefaults.standard.removeObject(forKey: key)
     }
 
-    /// Classify a cycle failure into one of the three user-facing kinds (nil = unclassifiable —
-    /// the UI only ever states what was verified). Shared by the 3am run (record + banner) and
-    /// the watched takeover's failed screen.
+    /// Classify a cycle failure into a user-facing kind (nil = unclassifiable — the UI only ever
+    /// states what was verified). Shared by the 3am run (record + banner) and the watched
+    /// takeover's failed screen.
     static func classify(_ error: Error) async -> Kind? {
-        // Typed errors first — certain, no probing needed. The cycle's stage wrappers each re-wrap
-        // the spine's usage limit in their own enum (create/update/judge/research), so match them
-        // all: a stringly wrap here once left the amber banner blind to a vault-leg usage limit.
+        // Typed errors first — certain.
         switch error {
-        case CodexCLI.CLIError.usageLimit,
-             VaultGenerator.VaultError.usageLimit,
-             VaultCloud.CloudError.usageLimit,
-             Proactive.ProError.usageLimit,
-             ProactiveResearch.ResError.usageLimit,
-             GiftLetter.GiftError.usageLimit:
-            return .usageLimit
-        case CodexCLI.CLIError.inputTooLarge:
-            return .inputTooLarge                    // the canary — see Kind
+        case LocalLLM.LLMError.notConfigured:
+            return .endpointMissing
+        case LocalLLM.LLMError.network:
+            return await networkUp() ? .failed : .noInternet
+        case LocalLLM.LLMError.http, LocalLLM.LLMError.badEndpoint, LocalLLM.LLMError.agentLoopDisabled:
+            return .failed
+        // ponytail: legacy error cases (vault/proactive/gift) currently surface as .failed when
+        // they bubble up; the agent-loop restoration in phase 2 brings typed cases back here.
         default:
-            break
+            return await networkUp() ? .failed : .noInternet
         }
-        // A 401 in codex's own output means the token died SERVER-side — auth.json still looks
-        // logged-in to the local probe below, so codex's stderr is the only tell (the exact
-        // failure of 2026-07-12: a token invalidated by a re-login elsewhere).
-        if case CodexCLI.CLIError.notAvailable(.notWorking(let detail)) = error,
-           detail.contains("401") || detail.localizedCaseInsensitiveContains("unauthorized") {
-            return .loggedOut
-        }
-        if await !CodexCLI.loginStatus() { return .loggedOut }   // local auth check — reliable even offline
-        if await !networkUp() { return .noInternet }
-        return nil
     }
 
     /// Persist a classified kind as the morning-after caution (3am runs only; nil records nothing).

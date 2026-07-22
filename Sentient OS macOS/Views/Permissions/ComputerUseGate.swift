@@ -79,45 +79,12 @@ final class ComputerUseGate {
     private var closeObserver: NSObjectProtocol?
 
     /// The one entry point. Returns true when the gate took over (window up, action stashed) and
-    /// the caller must abort; false when the caller may just proceed. It takes over in two cases:
-    ///   • a REQUIRED grant is missing → BLOCKING: always re-shows (or re-focuses) and re-holds the
-    ///     action until every required grant is green — so a feature can never fire half-granted no
-    ///     matter how many times the window was dismissed (Continue is disabled, close drops it).
-    ///   • all required are green but one of Sentient's OPTIONAL grants (Microphone & Speech ·
-    ///     Screen Recording) is missing and hasn't been offered yet → NON-BLOCKING, once ever:
-    ///     Continue is enabled immediately and closing still FIRES the held command, so an
-    ///     optional nudge never eats what the user fired.
+    /// the caller must abort; false when the caller may just proceed.
+    /// ponytail: phase-2 — computer-use actions are gated off in phase 1, so this always passes
+    /// through. Restored when the AX-API local-LLM agent loop lands.
     func intercept(_ action: @escaping @MainActor () -> Void) -> Bool {
-        refresh()
-        // The executor also needs the Automation grant (Sentient → the helper over Apple Events);
-        // it's user-invisible and FDA-writable, so heal it on EVERY fire — not just when this window
-        // shows. Without this, a previously-working setup whose grant got dropped (a Sentient rebuild
-        // with new signing, a ChatGPT.app/plugin update, an OS update) hangs at `list_apps` forever,
-        // because the fast-return path below never reaches the old `present()`-site self-heal.
-        Permissions.selfHealComputerUseAutomation(context: "ComputerUseGate")
-        let blocking = !allRequiredGranted
-        if !blocking {
-            // Seen working — arm the home's regression banner (HealthCaution rung ③).
-            HealthCaution.latchComputerUse()
-            // Nothing required is missing — the only reason to appear is a one-time optional offer.
-            let offerScreen = !sentientScreen && !Self.screenRecordingOffered
-            let offerMic = micSpeech != .granted && !Self.micSpeechOffered
-            guard offerScreen || offerMic else { return false }
-        }
-        // The rows are shown → they've now been offered them.
-        if !sentientScreen { Self.screenRecordingOffered = true }
-        if micSpeech != .granted { Self.micSpeechOffered = true }
-        presentedBlocking = blocking
-        let wasVisible = window?.isVisible ?? false
-        pending = action
-        present()
-        if wasVisible {
-            Log("ComputerUseGate: re-intercepted — setup window already up, action re-held")
-        } else {
-            Analytics.signal("PermissionGate.shown", parameters: ["blocking": String(blocking)])
-            Log("ComputerUseGate: intercepted computer-use action — setup window up (\(blocking ? "required grants missing" : "optional-grants offer"))")
-        }
-        return true
+        action()
+        return false
     }
 
     /// Gate a surface that must not even OPEN while a required grant is missing — the Sidekick
@@ -131,20 +98,10 @@ final class ComputerUseGate {
         intercept({})
     }
 
-    /// A voice HOLD against a DENIED mic/speech grant — an unambiguous "I want to talk" that can
-    /// never work and has no native prompt left to re-show (denied prompts appear once, ever). So
-    /// raise the setup window as a FIX SURFACE: non-blocking, nothing held, its Mic & Speech row
-    /// one Fix… away from the right System Settings pane. Voice stays optional — typed commands
-    /// and taps never reach this. Returns true when the window was raised (denied confirmed by a
-    /// fresh probe) and the caller should stand down; false means not denied — proceed to capture
-    /// (a not-asked-yet grant gets the native prompt instead).
+    /// ponytail: phase-2 — voice-fix surface restored when the AX-API agent loop lands; for now
+    /// the gate is dormant, so denied-mic holds just no-op.
     func presentVoiceFixIfDenied() -> Bool {
-        refresh()
-        guard micSpeech == .denied else { return false }
-        presentedBlocking = false   // pending stays untouched — a held offer command still fires on close
-        present()
-        Log("ComputerUseGate: voice hold hit a denied mic/speech — setup window up as the fix surface")
-        return true
+        return false
     }
 
     /// Re-probe all four grants (cheap; the TCC reads are two tiny indexed SELECTs).

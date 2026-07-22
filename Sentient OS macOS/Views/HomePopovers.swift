@@ -120,9 +120,9 @@ struct AnalysisPopover: View {
                         SourceChip("Apple Mail", on: runAppleMail) { runAppleMail.toggle() }
                     }
                     SourceChip("Gmail",    on: gmailConnected && runGmail,
-                               locked: CodexAuth.knowledgeBaseOnly, action: onPickGmail)
+                               locked: !LocalLLMConfig.isConfigured, action: onPickGmail)
                     SourceChip("Calendar", on: calendarConnected && runCalendar,
-                               locked: CodexAuth.knowledgeBaseOnly, action: onPickCalendar)
+                               locked: !LocalLLMConfig.isConfigured, action: onPickCalendar)
                 }
             }
             .padding(.top, 11)

@@ -83,7 +83,6 @@ struct DevToolsView: View {
     @State private var showActionItems = false
     @State private var showPermissions = false
     @State private var showHotkeyLab = false
-    @State private var showCodexSetup = false
     @State private var showMore = false
     @State private var fdaGranted = false
     @State private var resetResult: String?
@@ -262,16 +261,8 @@ struct DevToolsView: View {
         .buttonStyle(.plain)
     }
 
-    /// Opens the one CODEX SETUP window (install · log in · computer use) — all three steps live in
-    /// `CodexSetupView`, driven by the shared `CodexSetup` engine (the same code onboarding will use).
-    private var codexSetupButton: some View {
-        Button { showCodexSetup = true } label: {
-            Label("CODEX SETUP", systemImage: "cpu")
-                .font(.caption.weight(.bold)).tracking(2)
-                .frame(maxWidth: .infinity, minHeight: 40)
-        }
-        .buttonStyle(.bordered).tint(Theme.Ink.green)
-    }
+    /// ponytail: phase-2 — was the CODEX SETUP button; the dev cockpit for codex setup is gone.
+    private var codexSetupButton: some View { EmptyView() }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -322,7 +313,6 @@ struct DevToolsView: View {
         .sheet(isPresented: $showActionItems) { ProactiveItemsView() }
         .sheet(isPresented: $showPermissions) { PermissionsView() }
         .sheet(isPresented: $showHotkeyLab) { HotkeyLabView() }
-        .sheet(isPresented: $showCodexSetup) { CodexSetupView() }
         .sheet(isPresented: $showGmailConnect) { CloudConnectSheet(.gmail) }
         .sheet(isPresented: $showCalendarConnect) { CloudConnectSheet(.calendar) }
         .sheet(item: $deviceJob) { job in

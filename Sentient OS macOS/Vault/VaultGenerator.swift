@@ -159,37 +159,20 @@ actor VaultGenerator {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Run codex in `staging` (workspace-write), polling the staging `.md` count for progress, and
-    /// mapping a usage limit to a resumable `VaultError.usageLimit` carrying the staging path. Shared
-    /// by build + update so both get identical resume semantics.
-    func runCodexInStaging(_ invocation: CodexCLI.Invocation, staging: URL,
+    /// Run the LLM in `staging` (workspace-write) with progress polling. ponytail: phase-2 disabled —
+    /// the agent loop with file tools isn't built yet; throws until then. Signature kept simple
+    /// (prompt-only) since the codex-specific invocation envelope is gone.
+    func runCodexInStaging(_ prompt: String, staging: URL,
                            onProgress: @Sendable @escaping (Progress) -> Void = { _ in },
-                           onLine: (@Sendable (String) -> Void)? = nil) async throws -> CodexCLI.Envelope {
+                           onLine: (@Sendable (String) -> Void)? = nil) async throws {
         onProgress(.calling)
-        let poller = Task.detached {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
-                if Task.isCancelled { break }
-                onProgress(.writing(notes: Self.census(of: staging).notes))
-            }
-        }
-        defer { poller.cancel() }
-        do {
-            return try await CodexCLI.shared.run(invocation, onLine: onLine)
-        } catch let CodexCLI.CLIError.usageLimit(message, sessionID) {
-            // Staging is deliberately KEPT — the resume token points at it (survives an app restart).
-            Log("VaultGenerator: ⚠️ usage limit (session \(sessionID ?? "nil")); staging kept for resume")
-            throw VaultError.usageLimit(message: message,
-                                        resume: ResumeToken(sessionID: sessionID, stagingPath: staging.path))
-        }
+        _ = try await LocalLLM.shared.runAgent(prompt, onLine: onLine)   // throws agentLoopDisabled
     }
 
-    // MARK: - The agentic build (codex exec)
+    // MARK: - The agentic build (phase-2 disabled — needs the local-LLM agent loop)
 
-    /// Generate the whole vault through the user's own Codex CLI (the compute waterfall's
-    /// tier 1; without a working codex the run throws CodexCLI's `.notAvailable`). Pass a
-    /// `resume` token (from a prior `.usageLimit` error) to continue that run over its
-    /// kept staging dir.
+    /// Generate the whole vault through the local LLM. Phase-1 disabled — the agent loop with file
+    /// tools isn't built yet. Throws LocalLLM.LLMError.agentLoopDisabled.
     @discardableResult
     func generate(
         notes: [CloudNote],
@@ -197,162 +180,9 @@ actor VaultGenerator {
         onProgress: @Sendable @escaping (Progress) -> Void = { _ in },
         onLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> Result {
-        onProgress(.gathering(notes.count))
-        let fm = FileManager.default
-
-        // Build works in a throwaway staging dir (empty), swapped into the real vault only on success
-        // (B11 helpers) — a mid-run death never touches the existing vault. Resume reuses its dir.
-        let staging: URL
-        if let resume {
-            staging = URL(fileURLWithPath: resume.stagingPath, isDirectory: true)
-        } else {
-            staging = try Self.newStagingDir()
-        }
-
-        // The corpus, sliced under codex's 1 MiB turn-input cap. Slice 0 rides the build prompt;
-        // slices 1+ each fold into staging with the nightly updater's merge prompt, one fresh
-        // session per slice — codex's memory of earlier slices IS the staging dir it already
-        // wrote. A mid-sequence resume re-slices the staging SNAPSHOT, never a fresh CycleStore
-        // fetch (newest-first ordering would shift every boundary; see CorpusSlicer.saveCorpus).
-        let slices: [[CloudNote]]
-        var next: Int                               // the next unfed slice
-        if let resume {
-            if let idx = resume.sliceIndex {
-                guard let corpus = CorpusSlicer.loadCorpus(from: staging) else {
-                    // Snapshot gone (disk cleaning?) — the fold can't be continued safely; start over.
-                    Log("VaultGenerator: ⚠️ resume snapshot missing — restarting the build fresh")
-                    try? fm.removeItem(at: staging)
-                    return try await generate(notes: notes, resume: nil, onProgress: onProgress, onLine: onLine)
-                }
-                slices = CorpusSlicer.slice(corpus)
-                next = min(idx, slices.count)
-            } else {
-                // Pre-slicing / single-slice token: session-resume only. If that session never wrote
-                // a single note, resuming it buys nothing — restart fresh under the slicer instead
-                // (also covers any stale launch-window token whose oversized first turn never ran).
-                if Self.census(of: staging).notes == 0 {
-                    Log("VaultGenerator: ⚠️ resume session left staging empty — restarting the build fresh")
-                    try? fm.removeItem(at: staging)
-                    return try await generate(notes: notes, resume: nil, onProgress: onProgress, onLine: onLine)
-                }
-                slices = []
-                next = 0
-            }
-        } else {
-            slices = CorpusSlicer.slice(notes)
-            next = 0
-            if slices.count > 1 {
-                try CorpusSlicer.saveCorpus(notes, in: staging)
-                Log("VaultGenerator: corpus sliced into \(slices.count) parts (budget \(CorpusSlicer.budget) bytes)")
-            }
-        }
-
-        Log("VaultGenerator: \(resume == nil ? "starting" : "RESUMING") initial generation — \(notes.count) summaries → \(staging.lastPathComponent)")
-
-        var inputTokens = 0, outputTokens = 0
-        func record(_ envelope: CodexCLI.Envelope) {
-            inputTokens += envelope.inputTokens ?? 0
-            outputTokens += envelope.outputTokens ?? 0
-        }
-
-        // Finish the in-flight slice's session first (or, for a pre-slicing token, the whole run).
-        if let resume, let sid = resume.sessionID {
-            let buildFlavored = (resume.sliceIndex ?? 1) <= 1        // slice 0 (or legacy) = the build prompt
-            var invocation = CodexCLI.Invocation(prompt: buildFlavored
-                ? """
-                Continue building the vault exactly where you left off. The notes you already \
-                wrote are still in the working directory — don't rewrite them. Finish the \
-                remaining notes, then reply with one line: the total number of notes in the vault.
-                """
-                : """
-                Continue merging the new items into the vault exactly where you left off — the edits \
-                you already made are still in the working directory. When everything is merged, reply \
-                with one line: the number of notes you created or edited.
-                """)
-            invocation.feature = "vault"
-            invocation.sandbox = .workspaceWrite
-            invocation.cwd = staging.path
-            invocation.resumeSessionID = sid
-            invocation.timeout = 3_600
-            invocation.diag = ["slices": "\(max(slices.count, 1))", "slice_index": "\(max(next - 1, 0))"]
-            do {
-                record(try await runCodexInStaging(invocation, staging: staging, onProgress: onProgress, onLine: onLine))
-            } catch let VaultError.usageLimit(message, token) {
-                var t = token; t.sliceIndex = resume.sliceIndex      // unchanged — still the same slice
-                throw VaultError.usageLimit(message: message, resume: t)
-            }
-        }
-
-        // Feed the remaining slices, one fresh codex session each.
-        while next < slices.count {
-            try Task.checkCancellation()                             // the user's STOP, between slices
-            if slices.count > 1 { onProgress(.folding(part: next + 1, of: slices.count)) }
-            let prompt: String
-            if next == 0 {
-                prompt = vaultPromptCore + "\n\n" + agenticOutputInstructions + "\n\n"
-                    + Self.corpusMessage(slices[0], partial: slices.count > 1,
-                                         closing: "Synthesize them into the vault exactly as specified — write the files now.")
-            } else {
-                prompt = VaultCloud.updatePrompt(skeleton: VaultCloud.skeleton(of: staging), notes: slices[next])
-            }
-
-            var invocation = CodexCLI.Invocation(prompt: prompt)
-            invocation.feature = "vault"
-            // Effort stays at the .high default — .xhigh thinks far too long on gpt-5.6-sol for the
-            // initial build (downgraded 2026-07-10), and .high is also what a free/go plan's tiny
-            // monthly quota can afford (~70% of it).
-            invocation.sandbox = .workspaceWrite                 // writes confined to the staging dir
-            invocation.cwd = staging.path
-            invocation.timeout = 3_600
-            invocation.diag = ["corpus_chars": "\(prompt.utf8.count)",
-                               "slices": "\(slices.count)", "slice_index": "\(next)"]
-
-            if slices.count > 1 {
-                Log("VaultGenerator: feeding slice \(next + 1)/\(slices.count) — \(slices[next].count) summaries, \(prompt.utf8.count) bytes")
-            }
-            do {
-                record(try await runCodexInStaging(invocation, staging: staging, onProgress: onProgress, onLine: onLine))
-            } catch let VaultError.usageLimit(message, token) {
-                guard slices.count > 1 else { throw VaultError.usageLimit(message: message, resume: token) }
-                // A session that never started can't be resumed — its slice stays the next unfed.
-                var t = token; t.sliceIndex = (token.sessionID != nil) ? next + 1 : next
-                throw VaultError.usageLimit(message: message, resume: t)
-            }
-            if next == 0, Self.census(of: staging).notes == 0 {
-                // Slice 0 produced nothing — the merges would fold into thin air; fail now, not
-                // after burning the whole sequence's quota.
-                try? fm.removeItem(at: staging)
-                throw VaultError.empty
-            }
-            next += 1
-        }
-
-        let (written, folders) = Self.census(of: staging)
-        Log("VaultGenerator: codex finished — \(written) notes / \(folders) folders in staging")
-        guard written > 0 else {
-            try? fm.removeItem(at: staging)
-            throw VaultError.empty
-        }
-
-        // Success → atomically swap staging into the real vault (the only moment the old vault is
-        // touched); on any throw the vault is left intact (B11 swapStagingIntoVault).
-        onProgress(.materializing(notes: written))
-        CorpusSlicer.deleteCorpus(in: staging)               // the snapshot must never enter the vault
-        do {
-            try Self.swapStagingIntoVault(staging)
-        } catch {
-            Log("VaultGenerator: ❌ swap failed, vault left intact — \(ErrorLabel(error))")
-            // Structured event, not capture(error): a Cocoa move error embeds the failing note's
-            // PATH (i.e. a note title) which the scrubber can't fully strip from a spaced vault path.
-            CrashReporting.captureEvent("vault_swap_failed", tags: ["error": ErrorLabel(error)])
-            throw error
-        }
-        Log("VaultGenerator: ✅ vault swapped into place — \(written) notes at \(Self.vaultRoot.path)")
-
-        return Result(notes: written, folders: folders,
-                      inputTokens: inputTokens,
-                      outputTokens: outputTokens,
-                      vaultPath: Self.vaultRoot.path)
+        // ponytail: phase-2 — the agent loop on top of OpenAI tool-calling restores this.
+        // Build/stage-then-swap plumbing above is preserved so resuming in phase 2 is one edit.
+        throw VaultError.empty
     }
 
     /// Count the .md notes (and folders containing them) under a directory.

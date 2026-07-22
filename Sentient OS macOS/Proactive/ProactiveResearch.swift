@@ -119,69 +119,12 @@ actor ProactiveResearch {
 
     // MARK: Research & prepare
 
-    /// PART 2 — verify then prepare, in one read-only pass. For each PART 1 item: prove it's still real
-    /// against the live sources (Gmail MCP if connected + web) and the knowledge base, dropping the
-    /// stale ones; then stage every survivor ready to fire (draft in the user's voice + the execution
-    /// recipe). Read-only — it researches and stages, it NEVER fires. Verify-only — it never adds a new
-    /// item. Returns the ready + dropped split; throws on no-items / no-vault / usage-limit / failure.
+    /// PART 2 — verify then prepare. DISABLED in phase 1 — needs an agent loop (vault read +
+    /// Gmail MCP + web tools). ponytail: phase-2 restores this.
     func researchAndPrepare(items: [ActionItem], notes: [CloudNote] = [], now: Date = Date(),
                             calendarContext: String? = nil,
                             onLine: (@Sendable (String) -> Void)? = nil) async throws -> ReadyResult {
-        guard !items.isEmpty else { throw ResError.noItems }
-        let recent = Proactive.recent(from: notes, now: now)   // the SAME last-month corpus PART 1 saw
-
-        // The vault is a research surface, the source of the user's voice + the facts a draft/form
-        // needs, AND the agent's cwd (Read/Glob/Grep over the knowledge base).
-        let vault = VaultGenerator.vaultRoot
-        guard FileManager.default.fileExists(atPath: vault.path) else { throw ResError.noVault }
-
-        // The user-maintained Tracked Tasks file — read here so PART 2 can drop a would-be card
-        // whose underlying task the user has already marked closed (often resolved off the computer).
-        let trackedTasksBlock = await TaskTracker.shared.renderForPrompt()
-
-        var inv = CodexCLI.Invocation(prompt: Self.prompt(items: items, recent: recent, now: now, calendarContext: calendarContext,
-                                                          trackedTasksBlock: trackedTasksBlock))
-        inv.feature = "proactive-research"
-        inv.effort = .high                  // gpt-5.6-sol → high (accuracy + the prepared draft are the product)
-        inv.sandbox = .readOnly             // verifies + stages — never sends, drafts into a provider, or acts
-        inv.cwd = vault.path                // working dir = the knowledge base (a research surface + the voice)
-        inv.webSearch = true                // ground external facts (on-sale/event dates, deadlines, form fields)
-        inv.includeUserConfig = true        // load the user's MCP servers — the Gmail MCP (read-only)
-        inv.bypassApprovals = false         // ⚠️ load-bearing: NO fire — a connector write auto-cancels
-        inv.configOverrides = CodexCLI.Invocation.stripConnectorActionTools
-                                            // ⚠️ and the send/destroy connector tools don't even
-                                            // exist in this run — reads untouched
-        inv.outputSchema = Self.schema
-        inv.timeout = 1_800                 // agentic verify + prepare (Gmail + web + vault) over ≤5 items runs long
-
-        Log("ProactiveResearch: verify + prepare \(items.count) item(s) → Codex (read-only, vault cwd, Gmail MCP + web, never fire)…")
-        do {
-            let env = try await CodexCLI.shared.run(inv, onLine: onLine)
-            let parsed = Self.parse(env.result)
-            // No code-side cap: every card the model verified + prepared survives. The prompt asks for
-            // quality-based pruning only (drop stale/weak); a count cap would silently hide cards the
-            // user asked to see.
-            let result = ReadyResult(ready: parsed.ready, dropped: parsed.dropped)
-            Log("ProactiveResearch: ✅ ready \(result.ready.count), dropped \(result.dropped.count) (turns \(env.numTurns ?? -1), \(env.outputTokens ?? -1) out-tokens)")
-            #if DEBUG   // B7: the per-item detail carries preparedContent/titles/recipes (the user's life) —
-                        // DEBUG-only so it can NEVER become a Release breadcrumb (Sentry is Release-only).
-            for (i, a) in result.ready.enumerated() {
-                Log("  READY #\(i + 1) [\(a.method.rawValue)\(a.target.isEmpty ? "" : " · \(a.target)") · \(a.status.rawValue)\(a.dueDate.map { " · due \($0)" } ?? "")] \(a.title)\n      button: \(a.buttonText.isEmpty ? "(none)" : a.buttonText) · link: \(a.detailLabel)\n      card: \(a.cardSummary)\n      checked: \(a.verification)\n      content: \(a.preparedContent)\n      recipe: \(a.executionRecipe)\n      review: \(a.reviewNote.isEmpty ? "(none — fully ready)" : a.reviewNote)\n      src: \(a.sources.joined(separator: " | "))")
-            }
-            for d in result.dropped {
-                Log("  DROP \(d.title) — \(d.reason)")
-            }
-            #endif
-            // Merge with the existing deck instead of replacing. Cards the user has kept survive
-            // unless THIS run explicitly drops them (verified done/stale) or refreshes them (same
-            // title in `ready` — the fresh, verified version wins).
-            Self.mergeIntoLatest(result)
-            return result
-        } catch let CodexCLI.CLIError.usageLimit(message, _) {
-            throw ResError.usageLimit(message)
-        } catch {
-            throw ResError.failed("\(error)")
-        }
+        throw ResError.failed("Proactive research needs the local-LLM agent loop (phase 2).")
     }
 
     // MARK: Last-run persistence (for the For You surface / a dev viewer)

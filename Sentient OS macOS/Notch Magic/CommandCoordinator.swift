@@ -135,7 +135,7 @@ final class CommandCoordinator {
 
         // Knowledge-base-only backstop (the hotkey path already flashed at press) — covers the
         // home command bar, which submits without a press. The run must never fire on free/go.
-        if CodexAuth.knowledgeBaseOnly {
+        if !LocalLLMConfig.isConfigured {
             flash(Self.needsPlusNotice, for: 2.0)
             Log("submit blocked — knowledge-base-only plan (Sidekick needs Plus)")
             return
@@ -279,7 +279,7 @@ final class CommandCoordinator {
         // Knowledge-base-only plan (free/go): the notch answers the press INSTANTLY with the
         // Plus aside — same immediate beat as the mic-perms notice — and never opens for
         // listening or typing. Checked live per press, so it can never go stale.
-        if CodexAuth.knowledgeBaseOnly {
+        if !LocalLLMConfig.isConfigured {
             flash(Self.needsPlusNotice, for: 2.0)
             Log("hotkey blocked — knowledge-base-only plan (Sidekick needs Plus)")
             return
@@ -455,7 +455,7 @@ final class CommandCoordinator {
         if onboardingDemoArmed { beginNotchDemo(door: "notch click"); return }
         // Before home: silence pre-beat (the swell is off then anyway), the aside after.
         if interceptForOnboarding() { return }
-        if CodexAuth.knowledgeBaseOnly {
+        if !LocalLLMConfig.isConfigured {
             flash(Self.needsPlusNotice, for: 2.0)
             Log("notch click blocked — knowledge-base-only plan (Sidekick needs Plus)")
             return

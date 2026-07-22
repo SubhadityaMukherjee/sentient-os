@@ -29,16 +29,10 @@ struct PermissionsView: View {
     @State private var fdaGranted = false
     @State private var micGranted = false
     @State private var srGranted = false          // Sentient's Screen Recording
-    @State private var automationGranted = false   // Sentient → Codex helper, Apple Events (user DB)
+    @State private var automationGranted = false   // Sentient → Apple Events (user DB)
     @State private var automationStatus: String?
     @State private var daemonReady = false
     @State private var daemonStatus: String?
-
-    // Codex helper grants
-    @State private var codexAxGranted = false
-    @State private var codexAxStatus: String?
-    @State private var codexSrGranted = false
-    @State private var codexSrStatus: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -57,10 +51,6 @@ struct PermissionsView: View {
                     screenRecordingPane
                     automationPane
                     wakeDaemonPane
-
-                    sectionHeader("CODEX COMPUTER USE").padding(.top, 8)
-                    codexAccessibilityPane
-                    codexScreenRecordingPane
                 }
                 .padding(24)
             }
@@ -85,10 +75,6 @@ struct PermissionsView: View {
         automationGranted = Permissions.isTCCGranted(service: "kTCCServiceAppleEvents",
                                                      clientBundleID: Bundle.main.bundleIdentifier ?? "jesai.Sentient-OS-macOS")
         daemonReady = WakeHelperClient.shared.isReady
-        codexAxGranted = Permissions.isTCCGranted(service: "kTCCServiceAccessibility",
-                                                  clientBundleID: Permissions.computerUseHelperBundleID)
-        codexSrGranted = Permissions.isTCCGranted(service: "kTCCServiceScreenCapture",
-                                                  clientBundleID: Permissions.computerUseHelperBundleID)
     }
 
     // MARK: - Shared pane chrome
@@ -176,19 +162,13 @@ struct PermissionsView: View {
         }
     }
 
-    /// Automation — Sentient's right to drive the Codex helper over Apple Events. This one IS ours to
-    /// grant: kTCCServiceAppleEvents lives in the writable USER TCC DB, so one click writes it directly.
+    /// Automation — Sentient's right to drive other apps over Apple Events. (phase-1: just reads
+    /// the user TCC entry; phase-2 restores the grant helper for the AX-API computer-use agent.)
     private var automationPane: some View {
         pane(icon: "desktopcomputer", iconColor: automationGranted ? Theme.verdictColor(.survivor) : Theme.accent,
-             title: "Automation — control “Codex Computer Use”", granted: automationGranted,
-             description: "Computer use spawns codex, which drives Codex's bundled helper over Apple Events — Sentient needs the Automation right to control it. macOS won't reliably surface a prompt, so (using the Full Disk Access Sentient holds) this writes the grant straight into the user TCC database. One click → granted.",
+             title: "Automation — Apple Events", granted: automationGranted,
+             description: "Sentient's right to drive other Mac apps over Apple Events. Read-only here for now; the local-LLM agent loop's computer-use work will reuse this grant.",
              receipt: automationStatus) {
-            Button("Grant computer-use control") {
-                do { automationStatus = "✓ " + (try Permissions.grantComputerUseAutomation()) }
-                catch { automationStatus = "✗ \((error as? LocalizedError)?.errorDescription ?? "\(error)")" }
-                refreshAll()
-            }
-            .buttonStyle(.bordered).tint(Theme.accent)
             Button("Open Automation Settings") { Permissions.openAutomationSettings() }
                 .buttonStyle(.bordered).tint(.white)
             Spacer()
@@ -224,45 +204,6 @@ struct PermissionsView: View {
         case .notRegistered:    return "not registered"
         case .notFound:         return "not found (unsigned build?)"
         @unknown default:       return "unknown"
-        }
-    }
-
-    // MARK: - CODEX COMPUTER USE panes (helper's grants — direct TCC write + Settings fallback)
-    //
-    // These two live in the SIP-protected SYSTEM TCC database — we can't write them (only Apple's tccd
-    // can), so there's no one-click grant: the user toggles the helper in System Settings, or macOS
-    // prompts the first time computer use runs. We only READ status (from the system DB, via FDA).
-    // (The Automation grant that Sentient CAN write has its own pane above.)
-
-    private var codexAccessibilityPane: some View {
-        pane(icon: "cursorarrow.rays", iconColor: codexAxGranted ? Theme.verdictColor(.survivor) : Theme.accent,
-             title: "Accessibility — Codex Computer Use", granted: codexAxGranted,
-             description: "Lets Codex's helper move the mouse and type during computer use. macOS won't let an app grant this for another — toggle “Codex Computer Use” in Settings, or macOS prompts the first time computer use runs.",
-             receipt: codexAxStatus) {
-            Button("Open Accessibility Settings") {
-                Permissions.openAccessibilitySettings()
-                codexAxStatus = "opened Settings — enable “Codex Computer Use”, then Re-check."
-            }
-            .buttonStyle(.bordered).tint(Theme.accent)
-            Spacer()
-            Button("Re-check") { refreshAll() }
-                .buttonStyle(.borderless).controlSize(.small).tint(Theme.accent)
-        }
-    }
-
-    private var codexScreenRecordingPane: some View {
-        pane(icon: "rectangle.on.rectangle", iconColor: codexSrGranted ? Theme.verdictColor(.survivor) : Theme.accent,
-             title: "Screen Recording — Codex Computer Use", granted: codexSrGranted,
-             description: "Lets Codex's helper see the screen so it can act on what's there. macOS hardens screen capture — no app can grant it for another; toggle “Codex Computer Use” in Settings (needs a restart), or macOS prompts on first use.",
-             receipt: codexSrStatus) {
-            Button("Open Screen Recording Settings") {
-                Permissions.openScreenRecordingSettings()
-                codexSrStatus = "opened Settings — enable “Codex Computer Use”, then Re-check."
-            }
-            .buttonStyle(.bordered).tint(Theme.accent)
-            Spacer()
-            Button("Re-check") { refreshAll() }
-                .buttonStyle(.borderless).controlSize(.small).tint(Theme.accent)
         }
     }
 }

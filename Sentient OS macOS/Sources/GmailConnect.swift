@@ -41,7 +41,13 @@ enum GmailConnect {
 
     enum GmailError: LocalizedError {
         case dateMath
-        var errorDescription: String? { "Gmail date math failed." }
+        case failed(String)
+        var errorDescription: String? {
+            switch self {
+            case .dateMath: return "Gmail date math failed."
+            case .failed(let m): return m
+            }
+        }
     }
 
     /// Parsed weekly/iterative read result (from the structured codex reply).
@@ -77,133 +83,31 @@ enum GmailConnect {
 
     // MARK: - Connection probe (the "I'm done" YES/NO check)
 
-    /// One `codex exec`, read-only, that returns exactly YES/NO. Fail-closed (any error ⇒ false).
-    static func probeConnected() async -> Bool {
-        var inv = CodexCLI.Invocation(prompt: probePrompt)
-        inv.feature = "gmail"
-        inv.model = .gpt56luna               // light model for the connect-check
-        inv.effort = .low                    // a tool-availability YES/NO — no thinking needed
-        inv.sandbox = .readOnly
-        inv.timeout = 120
-        do {
-            let env = try await CodexCLI.shared.run(inv)
-            let answer = env.result.uppercased()
-            let yes = answer.contains("YES") && !answer.contains("NO")
-            Log("GmailConnect.probe: codex replied (\(env.result.count) chars) ⇒ \(yes ? "connected" : "NOT connected")")
-            return yes
-        } catch {
-            Log("GmailConnect.probe: ⚠️ \(ErrorLabel(error)) — treating as NOT connected")
-            return false
-        }
-    }
+    /// One probe — DISABLED in phase 1 (Gmail connector was codex's MCP; needs the agent loop).
+    /// ponytail: phase-2 restores when the agent loop has MCP-tool support.
+    static func probeConnected() async -> Bool { false }
 
     // MARK: - Initial read (last month → 4 weekly summaries)
 
-    /// Fresh start: wipe the bucket, then read the last 4 weeks — all four `codex exec` reads fire
-    /// IN PARALLEL (independent windows, independent subprocesses). Results are collected as they
-    /// finish (completion order) and recorded into CycleStore; the high-water mark is set to the
-    /// run-start once all four complete. Any window failing aborts the run (mark unset → a retry
-    /// re-runs all four after clearBucket), matching the iterative path's all-or-nothing commit.
+    /// Fresh start. DISABLED in phase 1 — codex MCP connector was the only Gmail read path.
     @discardableResult
     static func runInitial(onProgress: @Sendable @escaping (Progress) -> Void = { _ in }) async throws -> Int {
-        await CycleStore.shared.clearBucket(bucketKey)
-        let runStart = Date()
-        let cal = Calendar.current
-        let today = cal.startOfDay(for: runStart)
-        guard let tomorrow = cal.date(byAdding: .day, value: 1, to: today) else { throw GmailError.dateMath }
-
-        // Build all 4 weekly windows up front: [tomorrow − 7·(week+1), tomorrow − 7·week) —
-        // contiguous, no overlap. Their order is now cosmetic; the reads all run together.
-        var windows: [Window] = []
-        for week in 0..<initialWeeks {
-            guard let upper = cal.date(byAdding: .day, value: -7 * week, to: tomorrow),
-                  let lower = cal.date(byAdding: .day, value: -7 * (week + 1), to: tomorrow) else {
-                throw GmailError.dateMath
-            }
-            let weekLabel = "week of \(label(lower))"
-            let query = "after:\(qDate(lower)) before:\(qDate(upper))"
-            let itemDate = cal.date(byAdding: .day, value: -1, to: upper) ?? lower
-            windows.append(Window(label: weekLabel,
-                                  prompt: weeklyPrompt(query: query, label: weekLabel),
-                                  itemDate: itemDate))
-        }
-
-        // Announce every window starting — they all kick off now (parallel fan-out).
-        for w in windows { onProgress(.windowStart(total: initialWeeks, label: w.label, prompt: w.prompt)) }
-
-        // Fan out: one codex exec per window, all concurrent. Collect AS each finishes, then record +
-        // report serially here in the parent — so the counters and the progress box see no races.
-        var recorded = 0, completed = 0
-        try await withThrowingTaskGroup(of: WindowResult.self) { group in
-            for w in windows {
-                group.addTask { WindowResult(window: w, result: try await read(prompt: w.prompt)) }
-            }
-            for try await done in group {
-                completed += 1
-                if let r = done.result {
-                    await record(r, itemDate: done.window.itemDate, label: done.window.label)
-                    recorded += 1
-                    onProgress(.windowDone(total: initialWeeks, label: done.window.label,
-                                           summary: r.summary, threads: r.threadCount,
-                                           completed: completed, keptSoFar: recorded))
-                } else {
-                    onProgress(.windowDone(total: initialWeeks, label: done.window.label,
-                                           summary: nil, threads: 0,
-                                           completed: completed, keptSoFar: recorded))
-                }
-            }
-        }
-
-        // High-water mark = run start. Iterative reads everything after it (a few hours of overlap
-        // is harmless — the cloud updater synthesizes — and beats a boundary gap).
-        await CycleStore.shared.setPointer(bucketKey, ItemKey(order: runStart.timeIntervalSince1970, tiebreak: ""))
-        Log("GmailConnect.runInitial: ✅ \(recorded)/\(initialWeeks) weekly summaries recorded (parallel); pointer → \(runStart)")
-        return recorded
+        throw GmailError.failed("Gmail needs the local-LLM agent loop (phase 2).")
     }
 
     // MARK: - Iterative read (since the high-water mark)
 
-    /// One summary covering everything since the saved mark, then advance the mark. Falls back to a
-    /// full initial read if Gmail has never been read on this Mac.
+    /// Iterative read. DISABLED in phase 1.
     @discardableResult
     static func runIterative(onProgress: @Sendable @escaping (Progress) -> Void = { _ in }) async throws -> Int {
-        guard let mark = await CycleStore.shared.pointer(bucketKey) else {
-            return try await runInitial(onProgress: onProgress)   // never read → fall back to initial
-        }
-        let since = Date(timeIntervalSince1970: mark.order)
-        let runStart = Date()
-        let sinceLabel = "since \(label(since))"
-        // Gmail's `after:` accepts an epoch-seconds boundary — precise, no day-rounding.
-        let query = "after:\(Int(since.timeIntervalSince1970))"
-        let prompt = weeklyPrompt(query: query, label: sinceLabel)
-        onProgress(.windowStart(total: 1, label: sinceLabel, prompt: prompt))
-        var recorded = 0
-        if let r = try await read(prompt: prompt) {
-            await record(r, itemDate: runStart, label: sinceLabel)
-            recorded = 1
-            onProgress(.windowDone(total: 1, label: sinceLabel,
-                                   summary: r.summary, threads: r.threadCount, completed: 1, keptSoFar: 1))
-        } else {
-            onProgress(.windowDone(total: 1, label: sinceLabel,
-                                   summary: nil, threads: 0, completed: 1, keptSoFar: 0))
-        }
-        await CycleStore.shared.setPointer(bucketKey, ItemKey(order: runStart.timeIntervalSince1970, tiebreak: ""))
-        Log("GmailConnect.runIterative: ✅ \(recorded) summary since \(since); pointer → \(runStart)")
-        return recorded
+        throw GmailError.failed("Gmail needs the local-LLM agent loop (phase 2).")
     }
 
-    // MARK: - One read (a single codex exec over a date window)
+    // MARK: - One read (a single agent call over a date window)
 
     private static func read(prompt: String) async throws -> ReadResult? {
-        var inv = CodexCLI.Invocation(prompt: prompt)
-        inv.feature = "gmail"
-        inv.model = .gpt56luna               // light model for the high-volume Gmail reads
-        inv.effort = .medium                 // gpt-5.6-luna → medium
-        inv.sandbox = .readOnly              // we only read Gmail + return text (no file writes)
-        inv.outputSchema = weeklySchema
-        inv.timeout = 900                    // a heavy window with a few deep reads can run long
-        let env = try await CodexCLI.shared.run(inv)
-        return parse(env.result)
+        _ = try await LocalLLM.shared.runAgent(prompt)   // throws agentLoopDisabled
+        return nil
     }
 
     private static func record(_ r: ReadResult, itemDate: Date, label: String) async {

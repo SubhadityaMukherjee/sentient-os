@@ -26,7 +26,6 @@ import UserNotifications
 struct HealthPane: View {
     /// Optional on purpose: the pane's #Preview renders without an AppState in the environment.
     @Environment(AppState.self) private var appState: AppState?
-    @State private var codex = CodexSetup.shared
 
     // Sentient's own grants
     @State private var fdaGranted = Permissions.hasFullDiskAccess()
@@ -36,37 +35,26 @@ struct HealthPane: View {
     @State private var screenRec = Permissions.hasScreenRecording()   // Sentient's own grant — Sidekick's screen context
     @State private var notifStatus: UNAuthorizationStatus = .notDetermined
 
-    // The Codex helper's system-TCC grants (read via FDA; shown once computer use exists)
-    @State private var helperAccessibility = false
-    @State private var helperScreenRecording = false
+    // Local LLM endpoint config (the new "is the brain connected?" surface)
+    @State private var endpointConfig: LocalLLMConfig = LocalLLMConfig.current()
+    @State private var endpointTesting = false
+    @State private var endpointTestResult: String? = nil
+    @State private var endpointTestOK = false
+    @State private var endpointExpanded = true
 
-    // ChatGPT plan (decoded from the user's own codex login — CodexAuth)
-    @State private var plan: CodexAuth.Plan?
-    @State private var planChecking = false
-
-    @State private var codexExpanded = false
-    @State private var checked = false        // first full probe done (codex login check is seconds)
+    @State private var checked = false        // first full probe done
     @State private var revealed = false       // drives the rise-in cascade after the first probe
 
     private enum DaemonState { case ready, installing, notSetUp, disabled }
     private enum MicSpeechState { case granted, notAsked, denied }
 
-    private var showCodexPermissions: Bool { fdaGranted && codex.computerUseReady }
-
-    /// The whole codex stack, healthy — the CLI, the account, computer use, AND its two helper
-    /// grants (verifiable only with FDA; unverifiable never claims "all good"). A free/go plan
-    /// keeps the group expanded so its amber row stays visible.
-    private var codexAllGreen: Bool {
-        codex.installed && codex.loggedIn && codex.computerUseReady
-            && fdaGranted && helperAccessibility && helperScreenRecording
-            && plan?.tier != .limited
-    }
+    /// True when the endpoint has been configured AND verified to answer.
+    private var endpointAllGreen: Bool { endpointConfig.isConfigured }
 
     private var allGreen: Bool {
         fdaGranted && daemon == .ready && loginOn && micSpeech == .granted && screenRec
             && (notifStatus == .authorized || notifStatus == .provisional)
-            && codex.installed && codex.loggedIn && codex.computerUseReady
-            && (!showCodexPermissions || (helperAccessibility && helperScreenRecording))
+            && endpointAllGreen
     }
 
     var body: some View {
@@ -83,13 +71,10 @@ struct HealthPane: View {
                         .padding(.vertical, -7)   // the brighter, tighter group splitter (matches ProactivePane's)
                         .rise(6, revealed: revealed)
                     Group {
-                        if codexAllGreen && !codexExpanded {
-                            SettingsGroup(label: "Codex") { codexSummaryLine }
+                        if endpointAllGreen && !endpointExpanded {
+                            SettingsGroup(label: "Local LLM") { endpointSummaryLine }
                         } else {
-                            VStack(alignment: .leading, spacing: 30) {
-                                codexSetupGroup
-                                if showCodexPermissions { codexPermissionsGroup }
-                            }
+                            endpointGroup
                         }
                     }
                     .rise(7, revealed: revealed)
@@ -100,20 +85,9 @@ struct HealthPane: View {
         .task {
             await refresh()
             try? await Task.sleep(for: .seconds(0.5))
-            Permissions.selfHealComputerUseAutomation(context: "HealthPane")
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await refresh() }   // the user may just have fixed something in System Settings
-        }
-        .task(id: codex.loggingIn) {
-            // The browser-login auto-notice, same as onboarding: while a login is out, poll
-            // `codex login status` every 2s so the row flips green the moment they finish —
-            // no "I'm done" button. The task re-keys (and cancels) with the loggingIn flag.
-            while !Task.isCancelled, codex.loggingIn, !codex.loggedIn {
-                try? await Task.sleep(for: .seconds(2))
-                await codex.refreshLoginStatus()
-            }
-            if codex.loggedIn { plan = CodexAuth.currentPlan() }   // the plan row rides the login
         }
     }
 
@@ -340,18 +314,19 @@ struct HealthPane: View {
         }
     }
 
-    // MARK: - The collapsed codex summary (everything green = one quiet line; expanding REPLACES
-    // it — a one-way door per visit, so the detail view never carries an extra clutter line)
+    // MARK: - LOCAL LLM ENDPOINT (the brain — base URL, model, optional API key)
 
-    private var codexSummaryLine: some View {
-        Button {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { codexExpanded = true }
-        } label: {
+    /// The collapsible "all good" summary line, shown when the endpoint is configured.
+    private var endpointSummaryLine: some View {
+        Button { withAnimation { endpointExpanded = true } } label: {
             HStack(spacing: 11) {
                 HealthDot(color: Theme.Ink.green)
-                Text("Codex is all good.")
+                Text("Local LLM is connected.")
                     .font(.system(size: 12.5)).foregroundStyle(Theme.Ink.statusInk)
                 Spacer(minLength: 12)
+                Text(endpointConfig.model)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Theme.Ink.label)
                 MonoCaps("Details", size: 8.5, tracking: 1.6, color: Theme.Ink.label)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
@@ -363,113 +338,94 @@ struct HealthPane: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - SET UP CODEX (the cloud brain — all three are core, red when missing)
-    //
-    // The fix buttons drive the shared CodexSetup engine DIRECTLY — no intermediate sheet (the
-    // old wiring bounced every button through CodexSetupView, which is the dev cockpit; decided
-    // gone 2026-07-11). While a step runs, its LED goes amber, the note narrates, and the pill
-    // hides; failures surface as a quiet prose line under the row. The browser login is
-    // noticed automatically (the same 2s poll onboarding uses) — no "I'm done" button.
+    /// The editable group: base URL, model, API key, Test button, status line.
+    private var endpointGroup: some View {
+        SettingsGroup(label: "Local LLM Endpoint") {
+            VStack(alignment: .leading, spacing: 10) {
+                endpointField(label: "Base URL", placeholder: "http://localhost:11434/v1",
+                              text: Binding(get: { endpointConfig.baseURL },
+                                            set: { endpointConfig = LocalLLMConfig(baseURL: $0, apiKey: endpointConfig.apiKey, model: endpointConfig.model) }))
+                endpointField(label: "Model", placeholder: "llama3.2",
+                              text: Binding(get: { endpointConfig.model },
+                                            set: { endpointConfig = LocalLLMConfig(baseURL: endpointConfig.baseURL, apiKey: endpointConfig.apiKey, model: $0) }))
+                endpointField(label: "API key", placeholder: "optional (blank for local servers)",
+                              text: Binding(get: { endpointConfig.apiKey },
+                                            set: { endpointConfig = LocalLLMConfig(baseURL: endpointConfig.baseURL, apiKey: $0, model: endpointConfig.model) }))
 
-    private var codexSetupGroup: some View {
-        SettingsGroup(label: "Set Up Codex") {
-            VStack(alignment: .leading, spacing: 2) {
-                StatusLine(title: "Codex CLI",
-                           health: codex.installed ? .ok : (codex.installing ? .warn : .bad),
-                           note: codex.installing ? "installing…" : (codex.installed ? "installed" : "not installed"),
-                           tip: "OpenAI's official Codex command line tool. Sentient runs its cloud thinking through it, using your own ChatGPT subscription.\n\nInstall runs OpenAI's own installer; if codex is already there it simply updates in place, and your login and settings are untouched.",
-                           fixTitle: "Install…",
-                           fix: codex.installing ? nil : { Task { await codex.installCodex() } })
-                failureLine(codex.installStatus)
-                StatusLine(title: "ChatGPT account",
-                           health: codex.loggedIn ? .ok : (codex.loggingIn ? .warn : .bad),
-                           note: codex.loggedIn ? "logged in"
-                               : codex.loggingIn ? "finish in your browser" : "not logged in",
-                           tip: "Your own OpenAI login for Codex CLI.\n\n\u{201C}Log in\u{201D} asks Codex to open your browser to sign in. Sentient never sees your credentials.",
-                           fixTitle: codex.loggingIn ? "Re-open…" : "Log in…",
-                           fix: codex.loggedIn ? nil : { codex.startLogin() })
-                failureLine(codex.loginStatusLine)
-                if codex.loggedIn, let plan {
-                    StatusLine(title: "ChatGPT plan",
-                               health: plan.tier == .limited ? .warn : .ok,
-                               note: planChecking ? "checking…"
-                                   : plan.tier == .limited ? "\(plan.displayName.lowercased()) · knowledge base only"
-                                                           : plan.displayName.lowercased(),
-                               tip: "Free and Go plans carry a tiny monthly Codex quota and no Gmail or Calendar connectors, so Sentient runs in a one-time knowledge-base-only mode.\n\nChatGPT Plus unlocks Proactive Intelligence, Sidekick, and nightly knowledge-base updates.\n\nUpgraded? Reset Sentient (in the System tab) to activate the full Sentient OS experience.",
-                               fixTitle: "Re-check") { recheckPlan() }
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await testEndpoint() }
+                    } label: {
+                        HStack(spacing: 7) {
+                            if endpointTesting { ProgressView().controlSize(.mini) }
+                            Text(endpointTesting ? "testing…" : "Test connection")
+                                .font(.system(size: 11.5, weight: .medium))
+                        }
+                        .foregroundStyle(Theme.Ink.body)
+                        .padding(.horizontal, 12).padding(.vertical, 5)
+                        .background(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(endpointTesting || !endpointConfig.isConfigured)
+
+                    if endpointAllGreen {
+                        Button {
+                            withAnimation { endpointExpanded = false }
+                        } label: {
+                            Text("Collapse")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(Theme.Ink.label)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    Spacer()
                 }
-                StatusLine(title: "Computer use",
-                           health: codex.computerUseReady ? .ok : (codex.settingUpComputerUse ? .warn : .bad),
-                           note: codex.settingUpComputerUse ? "setting up…"
-                               : (codex.computerUseReady ? "ready" : "not set up"),
-                           tip: "The Codex add-on that can click, type, and act on your Mac when you fire an action.\n\nSet up downloads OpenAI's official Codex Desktop app package straight from OpenAI (about 535 MB), lifts out its computer-use plugin, and wires it into Codex CLI on this Mac. No desktop app installs; nothing is hosted by us.",
-                           fixTitle: "Set up…",
-                           fix: codex.settingUpComputerUse ? nil : { Task { await codex.setupComputerUse() } })
-                // The ~535 MB download deserves live narration, not just an amber dot.
-                if codex.settingUpComputerUse, let line = codex.computerUseStatus {
-                    SettingsProse(line).padding(.top, 2).padding(.bottom, 6)
-                } else {
-                    failureLine(codex.computerUseStatus)
+
+                if let endpointTestResult {
+                    Text(endpointTestResult)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(endpointTestOK ? Theme.Ink.green : .red)
                 }
+
+                SettingsProse("Any OpenAI-compatible endpoint works: Ollama, LM Studio, llama.cpp server, vLLM, MLX server, etc. Sentient never sends your data anywhere except the endpoint you configure.")
+                    .padding(.top, 4)
             }
         }
     }
 
-    /// A quiet prose line under a row, shown only when the engine's last word was a failure —
-    /// success is already the row's green dot, and progress has its own treatment.
     @ViewBuilder
-    private func failureLine(_ status: String?) -> some View {
-        if let status, status.hasPrefix("✗") {
-            SettingsProse(status).padding(.top, 2).padding(.bottom, 6)
+    private func endpointField(label: String, placeholder: String, text: Binding<String>) -> some View {
+        HStack(spacing: 12) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(Theme.faint)
+                .frame(width: 70, alignment: .leading)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.Ink.body)
+                .padding(.horizontal, 9).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 5).fill(Color.white.opacity(0.04)))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
         }
     }
 
-    // MARK: - CODEX PERMISSIONS (the helper's hands and eyes — system TCC, status + deep-link only)
-
-    private var codexPermissionsGroup: some View {
-        SettingsGroup(label: "Codex Permissions") {
-            VStack(alignment: .leading, spacing: 2) {
-                StatusLine(title: "Accessibility (move the mouse, type)",
-                           health: helperAccessibility ? .ok : .bad,
-                           note: helperAccessibility ? "granted" : "not granted",
-                           tip: "Lets Codex's helper app move the mouse and type for you. Granted to OpenAI's helper, not to Sentient.",
-                           fixTitle: "Grant…") {
-                    guideHelper(.accessibility)
-                }
-                StatusLine(title: "Screen Recording (see the screen)",
-                           health: helperScreenRecording ? .ok : .bad,
-                           note: helperScreenRecording ? "granted" : "not granted",
-                           tip: "Lets Codex's helper app see the screen so it acts on the right thing. Granted to OpenAI's helper, not to Sentient.",
-                           fixTitle: "Grant…") {
-                    guideHelper(.screenRecording)
-                }
-                SettingsProse("These belong to Codex's Computer Use helper, not Sentient. Flip its switch in each list; macOS may also prompt on the first computer-use run.")
-                    .padding(.top, 6)
-            }
-        }
-    }
-
-    /// The helper's system-TCC grants: the floating drag panel with the helper app as the card
-    /// (drag it into the list). Helper somehow missing → the plain deep-link is the fallback.
-    private func guideHelper(_ pane: PermissionGuide.Pane) {
-        if let helper = Permissions.computerUseHelperURL() {
-            PermissionGuide.shared.guide(pane, dragging: helper)
-        } else if pane == .accessibility {
-            Permissions.openAccessibilitySettings()
+    private func testEndpoint() async {
+        endpointTesting = true
+        endpointTestResult = nil
+        LocalLLMConfig.save(baseURL: endpointConfig.baseURL,
+                            apiKey: endpointConfig.apiKey,
+                            model: endpointConfig.model)
+        await LocalLLM.shared.reloadConfig()
+        let err = await LocalLLM.shared.ping()
+        endpointTesting = false
+        if let err {
+            endpointTestOK = false
+            endpointTestResult = "✗ \(err.prefix(160))"
         } else {
-            Permissions.openScreenRecordingSettings()
-        }
-    }
-
-    /// The "Re-check" pill on a free/go row — re-mints the token (CodexAuth.refreshPlan) so an
-    /// upgrade shows up immediately instead of on codex's 8-day timer. Failure just keeps the
-    /// current claim; the row never blocks anything.
-    private func recheckPlan() {
-        guard !planChecking else { return }
-        planChecking = true
-        Task {
-            if let fresh = try? await CodexAuth.refreshPlan() { plan = fresh }
-            planChecking = false
+            endpointTestOK = true
+            endpointTestResult = "✓ connected — \(endpointConfig.model) answered"
         }
     }
 
@@ -482,18 +438,7 @@ struct HealthPane: View {
         refreshMicSpeech()
         screenRec = Permissions.hasScreenRecording()
         notifStatus = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
-        codex.refreshInstalled()
-        codex.refreshComputerUse()
-        plan = CodexAuth.currentPlan()   // pure file read (the JWT claim on disk)
-        if fdaGranted {
-            helperAccessibility = Permissions.isTCCGranted(
-                service: "kTCCServiceAccessibility",
-                clientBundleID: Permissions.computerUseHelperBundleID)
-            helperScreenRecording = Permissions.isTCCGranted(
-                service: "kTCCServiceScreenCapture",
-                clientBundleID: Permissions.computerUseHelperBundleID)
-        }
-        await codex.refreshLoginStatus()   // last — it shells out to `codex login status`
+        endpointConfig = LocalLLMConfig.current()   // pick up any external change
         withAnimation(.easeOut(duration: 0.2)) { checked = true }   // first probe done → reveal
     }
 }

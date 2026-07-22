@@ -29,12 +29,12 @@ enum FactoryReset {
         try? await MirrorClient.shared.deleteRemote()   // best-effort — offline reset still works
         let d = UserDefaults.standard
         d.removeObject(forKey: "onboarding.step")
-        d.removeObject(forKey: CodexAuth.kbOnlyKey)     // the crossroads re-detects the plan fresh
-        d.removeObject(forKey: CodexAuth.assertedPlusKey)   // …and asks again before trusting
         d.removeObject(forKey: AppState.onboardingKey)
         d.removeObject(forKey: ComputerUseGate.screenRecordingOfferedKey)   // re-offer Sentient's optional grants on rebuild
         d.removeObject(forKey: ComputerUseGate.micSpeechOfferedKey)
         d.removeObject(forKey: HealthCaution.computerUseEverReadyKey)       // the home's computer-use banner re-arms at the rebuild's own gate
+        // ponytail: deliberately do NOT clear LocalLLMConfig keys — the endpoint is a user choice
+        // that should survive a rebuild (unlike the codex login, which is what they're resetting FROM).
         // The overnight scheduler starts over too: the 14h clock re-stamps at the REBUILD's first
         // cycle (not the wiped one's), the auto-enable one-shot is re-armed, and the production
         // flag comes off — otherwise a 3am run could fire mid-onboarding, racing the user's own

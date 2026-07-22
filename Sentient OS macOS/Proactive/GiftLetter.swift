@@ -42,46 +42,11 @@ actor GiftLetter {
         }
     }
 
-    /// Read the knowledge base and write the welcome gift letter. The model writes it to
-    /// "Gift from Sentient.md" in the vault folder; we read it back, persist it, and DELETE the file so
-    /// no stray note ever lingers (or gets mirrored). Hermetic — no web, no user MCP. Throws on
-    /// no-vault / empty / usage-limit / failure.
+    /// Read the knowledge base and write the welcome gift letter. DISABLED in phase 1 — needs the
+    /// agent loop with file tools (the model writes a file). ponytail: phase-2 restores this.
     @discardableResult
     func generate(onLine: (@Sendable (String) -> Void)? = nil) async throws -> String {
-        let vault = VaultGenerator.vaultRoot
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: vault.path) else { throw GiftError.noVault }
-
-        let giftFile = vault.appendingPathComponent(Self.fileName)
-        try? fm.removeItem(at: giftFile)               // clear any stale copy before the run
-        defer { try? fm.removeItem(at: giftFile) }     // never leave it behind, on ANY exit path
-
-        var inv = CodexCLI.Invocation(prompt: Self.prompt(vaultPath: vault.path))
-        inv.feature = "giftletter"
-        inv.effort = .high                  // the gift should feel like magic — give it the deep pass
-        inv.sandbox = .workspaceWrite       // it WRITES "Gift from Sentient.md" into the vault folder
-        inv.cwd = vault.path                // the knowledge base is the working dir → reads + writes here
-        inv.webSearch = false               // grounded ONLY in their own life — no external facts
-        inv.includeUserConfig = false       // hermetic — no user MCP servers, nothing leaks in
-        inv.timeout = 1_200
-
-        Log("GiftLetter: writing the welcome gift from the knowledge base at \(vault.lastPathComponent)…")
-        do {
-            let env = try await CodexCLI.shared.run(inv, onLine: onLine)
-            // The letter is the file the model wrote; fall back to its final message if it skipped it.
-            let fromFile = (try? String(contentsOf: giftFile, encoding: .utf8)) ?? ""
-            let letter = Self.cleanMarkdown(fromFile.isEmpty ? env.result : fromFile)
-            guard !letter.isEmpty else { throw GiftError.empty }
-            Log("GiftLetter: ✅ welcome letter (\(letter.count) chars, turns \(env.numTurns ?? -1), \(env.outputTokens ?? -1) out-tokens)")
-            Self.saveLatest(letter)
-            return letter
-        } catch let CodexCLI.CLIError.usageLimit(message, _) {
-            throw GiftError.usageLimit(message)
-        } catch let e as GiftError {
-            throw e
-        } catch {
-            throw GiftError.failed("\(error)")
-        }
+        throw GiftError.failed("The welcome gift needs the local-LLM agent loop (phase 2).")
     }
 
     // MARK: Persistence (the home reads this to render the welcome card)

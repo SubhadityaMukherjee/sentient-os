@@ -89,37 +89,11 @@ final class CommandRunModel {
             #endif
             Log("──────────────── live codex output ↓ ────────────────")
             do {
-                let out = try await CodexCLI.shared.runAgentCommand(prompt, imagePaths: shots.map(\.path)) { line in
-                    Task { @MainActor in
-                        #if DEBUG
-                        Log("CMD │ \(line)")
-                        #endif
-                        self?.push(line)
-                    }
-                }
-                let secs = Int(Date().timeIntervalSince(started))
-                #if DEBUG
-                Log("CMD: final → \(out.suffix(1200))")
-                #endif
-                // Honesty gate: codex exiting 0 is NOT success — the run's own STATUS sentinel is.
-                // A clean give-up (COULD_NOT) surfaces its reason in the notch/bar; a missing
-                // sentinel stays optimistic but is flagged to the scoreboard (statusPresent: false).
-                switch AgentStatus.parse(out) {
-                case .couldNot(let reason):
-                    Log("──────── 🤖 ⚠️ COULD NOT after \(secs)s (\(reason.count)-char reason) ────────")
-                    #if DEBUG
-                    Log("CMD: reason → \(reason)")
-                    #endif
-                    self?.complete(.failed,
-                                   line: reason.isEmpty ? "✗ couldn't do it" : "✗ \(String(reason.prefix(160)))",
-                                   board: .refused)
-                case .done:
-                    Log("──────── 🤖 ✓ DONE in \(secs)s ────────")
-                    self?.complete(.success, line: "✓ done")
-                case .none:
-                    Log("──────── 🤖 ✓ DONE in \(secs)s (no STATUS sentinel) ────────")
-                    self?.complete(.success, line: "✓ done", statusPresent: false)
-                }
+                // ponytail: phase-2 — computer use needs the local-LLM agent loop. Until then this
+                // path returns a clear "not yet" so the notch surfaces the right state.
+                _ = try await LocalLLM.shared.runAgent(prompt)
+                // (Unreachable in phase 1; runAgent throws agentLoopDisabled.)
+                self?.complete(.failed, line: "✗ computer use needs the local-LLM agent loop (phase 2)")
             } catch {
                 let secs = Int(Date().timeIntervalSince(started))
                 if Task.isCancelled {

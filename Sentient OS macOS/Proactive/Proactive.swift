@@ -61,16 +61,14 @@ actor Proactive {
         }
     }
 
-    /// How thorough this judge run is. `.full` is the 3 AM / Analyze Now path — high-effort, long
-    /// timeout. `.fast` is the real-time triage path — medium-effort, short timeout, so a tick can
-    /// pick up new summaries in well under a minute. The PROMPT is identical; only the invocation
-    /// tuning (feature label, effort, timeout) changes.
+    /// How thorough this judge run is. `.full` is the 3 AM / Analyze Now path — long timeout.
+    /// `.fast` is the real-time triage path — short timeout, so a tick can pick up new summaries
+    /// in well under a minute. The PROMPT is identical; only the timeout changes.
     enum RunMode: Sendable {
         case full
         case fast
 
         var feature: String { self == .fast ? "proactive-realtime" : "proactive" }
-        var effort: CodexCLI.Effort { self == .fast ? .medium : .high }
         var timeout: TimeInterval { self == .fast ? 300 : 1_200 }
         var label: String { self == .fast ? "FAST" : "FULL" }
     }
@@ -145,33 +143,21 @@ actor Proactive {
         let recent = Self.recent(from: notes, now: now)
         guard !recent.isEmpty else { throw ProError.noRecent }
 
-        // 2. One hermetic Codex call: summaries over stdin, NO tools. A neutral empty scratch dir is
-        //    the cwd so even read-only file tools have nothing to find — the model judges from the
+        // 2. One hermetic LocalLLM call: summaries in prompt, NO tools. The model judges from the
         //    summaries ALONE (the vault / Gmail / web research is PART 2's job).
-        let scratch = FileManager.default.temporaryDirectory
-            .appendingPathComponent("sentient-proactive-judge", isDirectory: true)
-        try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
 
         // The user-maintained Tracked Tasks file (vault root). Read before building the prompt so the
         // judge can suppress already-closed items and resurface on-hold ones whose trigger shifted.
         let trackedTasksBlock = await TaskTracker.shared.renderForPrompt()
 
-        var inv = CodexCLI.Invocation(prompt: Self.prompt(recent: recent, now: now, calendarContext: calendarContext,
-                                                          trackedTasksBlock: trackedTasksBlock))
-        inv.feature = mode.feature            // "proactive" / "proactive-realtime" (telemetry separation)
-        inv.effort = mode.effort              // .high for FULL · .medium for FAST (the real-time tradeoff)
-        inv.sandbox = .readOnly             // never writes or acts
-        inv.cwd = scratch.path              // neutral empty dir — nothing to read
-        inv.webSearch = false               // summaries-only; web research is PART 2
-        inv.includeUserConfig = false       // hermetic — no user MCP servers (Gmail is PART 2)
-        inv.outputSchema = Self.schema
-        inv.timeout = mode.timeout          // FULL: 1200s deep reasoning · FAST: 300s triage
+        let prompt = Self.prompt(recent: recent, now: now, calendarContext: calendarContext,
+                                  trackedTasksBlock: trackedTasksBlock)
 
-        Log("Proactive.judge (\(mode.label)): \(recent.count) summaries in the last \(Self.lookbackDays)d → asking Codex (summaries-only, hermetic)…")
+        Log("Proactive.judge (\(mode.label)): \(recent.count) summaries in the last \(Self.lookbackDays)d → asking LocalLLM…")
         do {
-            let env = try await CodexCLI.shared.run(inv, onLine: onLine)
-            let items = Self.parse(env.result)   // no count cap — every genuine candidate continues to PART 2
-            Log("Proactive.judge (\(mode.label)): ✅ \(items.count) action item(s) (turns \(env.numTurns ?? -1), \(env.outputTokens ?? -1) out-tokens)")
+            let result = try await LocalLLM.shared.run(prompt: prompt, timeout: mode.timeout, onLine: onLine)
+            let items = Self.parse(result)   // no count cap — every genuine candidate continues to PART 2
+            Log("Proactive.judge (\(mode.label)): ✅ \(items.count) action item(s)")
             #if DEBUG   // B7: title/action/importance/sources are the user's life — DEBUG-only so it can
                         // never become a Release breadcrumb (Sentry is Release-only).
             for (i, it) in items.enumerated() {
@@ -180,8 +166,10 @@ actor Proactive {
             #endif
             Self.saveLatest(items)
             return items
-        } catch let CodexCLI.CLIError.usageLimit(message, _) {
-            throw ProError.usageLimit(message)
+        } catch let LocalLLM.LLMError.notConfigured {
+            throw ProError.failed("No local LLM endpoint configured.")
+        } catch let LocalLLM.LLMError.agentLoopDisabled {
+            throw ProError.failed("Agent loop not yet available.")
         } catch {
             throw ProError.failed("\(error)")
         }
@@ -209,22 +197,7 @@ actor Proactive {
     /// Forget the last judge run (the dev "Reset everything" path).
     static func clear() { UserDefaults.standard.removeObject(forKey: latestKey) }
 
-    // MARK: Output schema (the `--output-schema` contract)
-
-    private static let schema = """
-    {"type":"object","additionalProperties":false,"properties":{\
-    "action_items":{"type":"array","items":{"type":"object","additionalProperties":false,"properties":{\
-    "title":{"type":"string"},\
-    "action":{"type":"string"},\
-    "importance":{"type":"string"},\
-    "due_date":{"type":"string"},\
-    "sources":{"type":"array","items":{"type":"string"}},\
-    "urgency":{"type":"string","enum":["high","medium","low"]}},\
-    "required":["title","action","importance","due_date","sources","urgency"]}}},\
-    "required":["action_items"]}
-    """
-
-    // MARK: Tolerant parse (output-schema makes `result` the JSON; still fence-safe)
+    // MARK: Tolerant parse (the model returns JSON; still fence-safe)
 
     private static func parse(_ result: String) -> [ActionItem] {
         let span: String
@@ -432,7 +405,8 @@ actor Proactive {
         and do NOT skip a real item just because it's small.
 
         ## Output
-        Return ONLY the structured object defined by the output schema — no prose around it. For each \
+        Return ONLY a compact JSON object (no markdown, no prose) with this exact shape: \
+        `{"action_items":[{...}]}`. For each \
         action item:
         - **title** — a short, specific, human headline (≤ ~8 words), like a great notification.
         - **action** — the EXACT next step, addressed to the user ("Reply to…", "Register for…", \

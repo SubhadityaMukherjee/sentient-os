@@ -15,7 +15,7 @@
 //  ProactiveCycle.
 //
 //  Skip conditions on each tick (mirrors OvernightScheduler.runProcessing's gates):
-//   - `CodexAuth.knowledgeBaseOnly` (free/go plan): no proactive quota to spend on ticks.
+//   - `!LocalLLMConfig.isConfigured` (free/go plan): no proactive quota to spend on ticks.
 //   - `PipelineActivity.shared.isRunning`: a full cycle, Analyze Now, or another tick is in flight.
 //   - `PowerState.overnightBlockReason`: don't hammer the GPU on battery / Low Power / thermal.
 //
@@ -101,7 +101,7 @@ final class RealtimeScheduler {
     /// The body: sync → check for new notes → run the realtime increment if anything's new.
     private func tick() async {
         // Skip conditions — same gates as OvernightScheduler.runProcessing.
-        guard !CodexAuth.knowledgeBaseOnly else { return }
+        guard LocalLLMConfig.isConfigured else { return }
         guard !PipelineActivity.shared.isRunning else {
             statusLine = "skipped (pipeline busy)"
             return

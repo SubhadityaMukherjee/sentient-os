@@ -43,11 +43,11 @@ struct HomeView: View {
 
     /// Free/go knowledge-base-only mode: no cards ever come, the command bar hides (computer use
     /// burns quota these plans don't have), and the empty state carries the preview message.
-    private var kbOnly: Bool { previewKBOnly || CodexAuth.knowledgeBaseOnly }
+    /// ponytail: now means "no local LLM endpoint configured" — same gate, inverted polarity.
+    private var kbOnly: Bool { previewKBOnly || !LocalLLMConfig.isConfigured }
     var previewUpgraded: Bool? = nil   // preview-only: force the upgraded/not-upgraded note
-    /// A kbOnly user whose claim now reads full — they upgraded (codex's own 8-day refresh, the
-    /// Health pane's Re-check, or the crossroads all re-mint it). Re-read every appearance, so
-    /// the preview note flips to the "reset & rebuild" celebration without any push machinery.
+    /// A kbOnly user whose endpoint has just been configured (was off, now on). Re-read every
+    /// appearance, so the preview note flips without push machinery.
     @State private var planUpgraded = false
 
     @Environment(\.openWindow) private var openWindow
@@ -113,7 +113,7 @@ struct HomeView: View {
             letterShown = false
             model.coordinator = appState.commandCoordinator
             if !appState.isUninstalling { model.beginVisit(deck: deck) }
-            planUpgraded = previewUpgraded ?? (kbOnly && CodexAuth.currentPlan()?.tier == .full)
+            planUpgraded = previewUpgraded ?? (kbOnly && LocalLLMConfig.isConfigured)
             caution = OvernightCaution.latest()
             probeHealth()
         }
@@ -214,7 +214,7 @@ struct HomeView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             } else if let caution {
                 CautionCapsule(message: caution.kind.message,
-                               actionTitle: caution.kind == .loggedOut ? "Open Settings" : nil,
+                               actionTitle: caution.kind == .endpointMissing ? "Open Settings" : nil,
                                onAction: openHealthSettings,
                                onDismiss: {
                                    OvernightCaution.clear()
@@ -445,13 +445,13 @@ struct HomeView: View {
             .padding(.top, 20)
         }
         HStack(spacing: 14) {
-            GlowButton(title: "Get ChatGPT Plus", systemImage: "arrow.up.forward",
-                       glowIntensity: 0.5, action: { NSWorkspace.shared.open(CodexAuth.upgradeURL) })
+            GlowButton(title: "Configure endpoint", systemImage: "gearshape",
+                       glowIntensity: 0.5, action: openSettingsPane)
                 .frame(width: 250)
             QuietPillButton(title: "Reset Sentient…", action: openSystemPane)
         }
         .padding(.top, compact ? 22 : 28)
-        Text("Upgraded? Reset rebuilds your knowledge with Gmail, Calendar, and the full engine.")
+        Text("Once your local LLM is configured, the full engine wakes up.")
             .font(.system(size: 11.5))
             .foregroundStyle(Theme.faint)
             .padding(.top, 12)
@@ -477,6 +477,11 @@ struct HomeView: View {
 
     private func openSystemPane() {
         SettingsView.requestedPane = .system
+        openWindow(id: SettingsView.windowID)
+    }
+
+    private func openSettingsPane() {
+        SettingsView.requestedPane = .health
         openWindow(id: SettingsView.windowID)
     }
 

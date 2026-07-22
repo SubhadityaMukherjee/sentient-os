@@ -124,37 +124,7 @@ final class AppState {
                 }
             }
         }
-
-        // First launch (onboarding not yet completed): kick off the codex CLI install silently in
-        // the background, 1s after launch, while the user reads the intro slides. A USED codex
-        // setup on this Mac (~/.codex/auth.json or config.toml — codex writes those once it's
-        // actually run) means never auto-install over it at launch — those setups get their CLI
-        // update from the onboarding codex screen's kick instead (the installer doubles as the
-        // updater). The bare ~/.codex folder is NOT proof: an install interrupted mid-download
-        // (the FDA relaunch) leaves one behind, and skipping on it would strand onboarding
-        // without codex. A quit-and-relaunch mid-onboarding re-runs the installer, which is safe
-        // (update in place). Login + computer-use stay interactive, later in the flow.
-        if !hasCompletedOnboarding {
-            Task {
-                try? await Task.sleep(for: .seconds(1))
-                let fm = FileManager.default
-                let codexDir = fm.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
-                if fm.fileExists(atPath: codexDir.appendingPathComponent("auth.json").path)
-                    || fm.fileExists(atPath: codexDir.appendingPathComponent("config.toml").path) {
-                    Log("Onboarding: ~/.codex is a real setup — skipping the background codex install")
-                    return
-                }
-                // OpenAI's installer fails transiently (its GitHub-JSON parsing flaps per
-                // request), so one attempt isn't enough: retry with a 10s gap while the user is
-                // still on the slides/perms. A retried flap usually succeeds on the next try.
-                for attempt in 1...4 {
-                    await CodexSetup.shared.installCodex()
-                    if CodexSetup.shared.installed { return }
-                    Log("Onboarding: codex install attempt \(attempt) failed — retrying in 10s")
-                    try? await Task.sleep(for: .seconds(10))
-                }
-                Log("Onboarding: codex install still failing after 4 attempts — the login screen's re-kick is the remaining net")
-            }
-        }
+        // ponytail: phase-2 — was the background codex install kick. The new onboarding's endpoint
+        // step is the only LLM-setup the user does; nothing to launch here.
     }
 }

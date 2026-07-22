@@ -106,10 +106,7 @@ struct ProcessingView: View {
 
     private enum UIState: Equatable { case loadingModel, processing, preparing, completed, failed(CycleFailure) }
     @State private var state: UIState = .loadingModel
-    /// The failed screen's inline codex login (the "Codex isn't logged in" fix) — same shared
-    /// engine Settings → Health drives; `loginStarted` scopes the auto-notice poll + auto-retry
-    /// to a login WE opened from that screen.
-    @State private var codex = CodexSetup.shared
+    /// ponytail: phase-2 — was the inline codex login machinery for the failed screen.
     @State private var loginStarted = false
     @State private var prepStatus = "Preparing your suggestions…"
     /// The 10-minute patience flip for the cloud tail's bottom line (see `patienceLine`).
@@ -487,47 +484,20 @@ struct ProcessingView: View {
                 .multilineTextAlignment(.center).frame(maxWidth: 360)
             HStack(spacing: 12) {
                 Button("Back", action: onExitEarly ?? onDone).buttonStyle(.bordered).tint(.white)
-                if failure.kind == .loggedOut {
-                    Button("Retry") { Task { started = false; await startIfNeeded() } }
-                        .buttonStyle(.bordered).tint(.white)
-                    Button("Log in to Codex") { loginStarted = true; codex.startLogin(force: true) }
-                        .buttonStyle(.borderedProminent).tint(.white)
-                        .disabled(codex.loggingIn)
-                } else {
-                    Button("Retry") { Task { started = false; await startIfNeeded() } }
-                        .buttonStyle(.borderedProminent).tint(.white)
-                }
-            }
-            if loginStarted, codex.loggingIn {
-                Text("A browser window opened. Finish signing in there; I'll retry on my own.")
-                    .font(.caption).foregroundStyle(.white.opacity(0.4))
+                Button("Retry") { Task { started = false; await startIfNeeded() } }
+                    .buttonStyle(.borderedProminent).tint(.white)
             }
         }
-        // The browser-login auto-notice, same as Settings → Health and onboarding: while our
-        // login is out, poll `codex login status` (the codex login process self-exits once
-        // auth.json lands, no confirm button); the moment it reads logged-in, retry the cycle
-        // on our own. Leaving the failed state cancels the poll.
-        .task(id: loginStarted) {
-            guard loginStarted else { return }
-            while !Task.isCancelled, !codex.loggedIn {
-                try? await Task.sleep(for: .seconds(1.5))
-                await codex.refreshLoginStatus()
-            }
-            guard !Task.isCancelled, codex.loggedIn else { return }
-            loginStarted = false
-            // Unstructured on purpose: the retry flips state out of .failed, which tears THIS
-            // task down — the run must survive that.
-            Task { started = false; await startIfNeeded() }
-        }
+        // ponytail: phase-2 — was the inline codex login retry path. With LocalLLM, configuring
+        // the endpoint happens in Settings; this failed screen just offers Back + Retry.
     }
 
     private static func failTitle(_ kind: OvernightCaution.Kind?) -> String {
         switch kind {
-        case .loggedOut:      "Codex isn't logged in"
-        case .usageLimit:     "We hit ChatGPT's usage limit"
-        case .noInternet:     "No internet connection"
-        case .inputTooLarge:  "This batch was too big to send"
-        case nil:             "Processing failed"
+        case .endpointMissing: "No local LLM endpoint"
+        case .failed:          "The local LLM endpoint errored"
+        case .noInternet:      "No internet connection"
+        case nil:              "Processing failed"
         }
     }
 
@@ -535,11 +505,10 @@ struct ProcessingView: View {
     /// Sentry); unclassified ones show the step's own message, as before.
     private static func failBody(_ failure: CycleFailure) -> String {
         switch failure.kind {
-        case .loggedOut:      "Sentient runs on your own ChatGPT account through codex, and that login has stopped working. Log back in and I'll pick up right where we stopped."
-        case .usageLimit:     "Your plan's window resets on its own. Everything so far is saved; retry in a while and I'll pick up right where we stopped."
-        case .noInternet:     "This step runs in the cloud. Once you're back online, hit Retry; everything so far is saved."
-        case .inputTooLarge:  "Sentient tried to send ChatGPT more than it accepts in one request. Your analysis is saved; if a retry hits this again, update Sentient OS and retry once more."
-        case nil:             failure.message
+        case .endpointMissing: "Set up a local LLM endpoint in Settings and I'll pick up where we stopped."
+        case .failed:          "Your local LLM endpoint returned an error mid-run. Everything so far is saved; check the endpoint and retry."
+        case .noInternet:      "The endpoint couldn't be reached. Once you're back online, hit Retry; everything so far is saved."
+        case nil:              failure.message
         }
     }
 
