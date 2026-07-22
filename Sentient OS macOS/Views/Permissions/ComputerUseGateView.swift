@@ -2,14 +2,13 @@
 //  ComputerUseGateView.swift
 //  Sentient OS macOS
 //
-//  The one-time setup window's face (ComputerUseGate presents it): the four action grants as the
-//  same StatusLine rows Settings → Health uses, in two groups — SIDEKICK & PROACTIVE (Sentient's
-//  OPTIONAL Microphone & Speech and Screen Recording — amber, never blocking) and CODEX
-//  PERMISSIONS (the helper's Accessibility, Screen Recording — the REQUIRED pair). Mic & Speech
-//  fix via the native system prompts; the other three fix via PermissionGuide's floating drag
-//  panel (they're system-TCC lists — only the user can flip them). Continue fires the held action
-//  whether or not the optionals are green; the rows re-probe when the app foregrounds (returning
-//  from System Settings).
+//  The one-time setup window's face (ComputerUseGate presents it): the action grants as the same
+//  StatusLine rows Settings → Health uses, in two groups — SIDEKICK & PROACTIVE (Sentient's
+//  OPTIONAL Microphone & Speech — amber, never blocking) and ACT ON YOUR MAC (Sentient's REQUIRED
+//  Accessibility + Screen Recording — the gate holds the action until both are green).
+//
+//  ponytail: phase-3 — was the codex helper's TCC grants; now Sentient itself drives the Mac,
+//  so both REQUIRED rows point at Sentient's own bundle in the system TCC lists.
 //
 
 import SwiftUI
@@ -47,31 +46,24 @@ struct ComputerUseGateView: View {
                                    fixTitle: gate.micSpeech == .notAsked ? "Allow…" : "Fix…") {
                             fixMicSpeech()
                         }
-                        StatusLine(title: "Screen Recording",
-                                   health: gate.sentientScreen ? .ok : .warn,   // optional — amber, never blocking
-                                   note: gate.sentientScreen ? "granted" : "recommended",
-                                   tip: "Optional but recommended.\nLets Sentient see a screenshot of your screen the moment you fire a command, so it can see the thing you're asking about (\u{201C}finish this\u{201D}, \u{201C}reply to this\u{201D}).\n\nWithout it, you'll have to explicitly tell it which app you want it to start controlling.",
-                                   fixTitle: "Allow…") {
-                            fixSentientScreen()
-                        }
                     }
                 }
 
-                SettingsGroup(label: "Codex Permissions") {
+                SettingsGroup(label: "Act On Your Mac") {
                     VStack(alignment: .leading, spacing: 2) {
                         StatusLine(title: "Accessibility (move the mouse, type)",
-                                   health: gate.helperAccessibility ? .ok : (gate.helperOnDisk ? .bad : .warn),
-                                   note: helperNote(granted: gate.helperAccessibility),
-                                   tip: "Lets Codex's helper app move the mouse and type for you. Granted to OpenAI's helper, not to Sentient.",
+                                   health: gate.sentientAccessibility ? .ok : .bad,
+                                   note: gate.sentientAccessibility ? "granted" : "required",
+                                   tip: "Lets Sentient itself move the mouse and type for you when you fire a computer-use action. Granted to Sentient (NOT a separate helper).",
                                    fixTitle: "Grant…") {
-                            fixHelper(.accessibility)
+                            fixSentientAccessibility()
                         }
                         StatusLine(title: "Screen Recording (see the screen)",
-                                   health: gate.helperScreen ? .ok : (gate.helperOnDisk ? .bad : .warn),
-                                   note: helperNote(granted: gate.helperScreen),
-                                   tip: "Lets Codex's helper app see the screen so it acts on the right thing. Granted to OpenAI's helper, not to Sentient.",
+                                   health: gate.sentientScreen ? .ok : .bad,
+                                   note: gate.sentientScreen ? "granted" : "required",
+                                   tip: "Lets Sentient see a screenshot of your screen so the agent acts on what you actually see. Granted to Sentient itself.",
                                    fixTitle: "Grant…") {
-                            fixHelper(.screenRecording)
+                            fixSentientScreen()
                         }
                     }
                 }
@@ -90,7 +82,7 @@ struct ComputerUseGateView: View {
 
             HStack(spacing: 8) {
                 Image(systemName: "shield").font(.system(size: 10)).foregroundStyle(Theme.Ink.label)
-                Text("Private by design. Your files never leave this Mac.")
+                Text("Private by design. Screenshots go to your configured LLM endpoint, never a Sentient server.")
                     .font(.system(size: 11)).foregroundStyle(Theme.Ink.label)
             }
             .frame(maxWidth: .infinity)
@@ -134,25 +126,17 @@ struct ComputerUseGateView: View {
         }
     }
 
-    /// The Screen Recording list is drag-authorizable, and Sentient may not be IN the list at all
-    /// (on Tahoe, CGRequestScreenCaptureAccess doesn't reliably add it — field-verified) — so the
-    /// guide always carries Sentient itself as the drag card. Dragging when the row already exists
-    /// is harmless; the user just flips the existing switch.
+    /// Sentient's own Accessibility — drag-authorizable; the guide carries Sentient itself as the
+    /// drag card so the user can drop it into the list.
+    private func fixSentientAccessibility() {
+        guard !gate.sentientAccessibility else { return }
+        PermissionGuide.shared.guide(.accessibility, dragging: Bundle.main.bundleURL)
+    }
+
+    /// Sentient's own Screen Recording — same drag flow.
     private func fixSentientScreen() {
         guard !gate.sentientScreen else { return }
         PermissionGuide.shared.guide(.screenRecording, dragging: Bundle.main.bundleURL)
-    }
-
-    // MARK: The helper's grants — system TCC; the drag panel is the only honest path
-
-    private func helperNote(granted: Bool) -> String {
-        if granted { return "granted" }
-        return gate.helperOnDisk ? "not granted" : "computer use still setting up"
-    }
-
-    private func fixHelper(_ pane: PermissionGuide.Pane) {
-        guard let helper = Permissions.computerUseHelperURL() else { return }
-        PermissionGuide.shared.guide(pane, dragging: helper)
     }
 }
 

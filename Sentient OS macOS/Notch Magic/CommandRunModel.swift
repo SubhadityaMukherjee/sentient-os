@@ -72,28 +72,70 @@ final class CommandRunModel {
         Log("──────── 🤖 \(mode.label.uppercased()) · command ────────")
         let started = Date()
         task = Task { [weak self] in
-            // Snap every display NOW so computer use sees exactly what the user is looking at, on
+            // Snap every display NOW so the VLM sees exactly what the user is looking at, on
             // whichever screen. OPTIONAL + grant-gated: empty if the Screen Recording grant is
-            // missing → the run goes text-only (the grant is asked once, behind an info panel that
-            // states exactly what is captured and why). The frames go to the user's OWN codex /
-            // OpenAI (the same trust boundary as their ChatGPT) — NEVER a Sentient server — and the
-            // local temp files are deleted the moment codex is done (the defer below).
+            // missing → the run aborts with a clear "needs Screen Recording" message. The frames
+            // go to the user's OWN configured endpoint — never a Sentient server.
             let shots = await ScreenCapture.grab()
+            let initialImages: [Data] = shots.compactMap { try? Data(contentsOf: $0) }
             defer { ScreenCapture.discard(shots) }
             let prompt = Self.commandPrompt(task: task0, mode: mode, screenshots: shots.count,
                                             spoken: source == "voice")
-            Log("CMD: launching codex exec (gpt-5.6-sol · \(mode.promptPhrase) · bypass sandbox · screenshots: \(shots.count))…")
-            #if DEBUG   // B7: prompt + live output + final carry the user's command, KB context, and codex
-                        // play-by-play — DEBUG-only so they can never become a Release breadcrumb.
+            Log("CMD: launching LocalLLM agent loop (\(mode.promptPhrase) · screenshots: \(shots.count))…")
+            #if DEBUG   // B7: prompt carries the user's command + KB context — DEBUG-only so it
+                        // can never become a Release breadcrumb.
             Log("CMD: prompt ↓\n\(prompt)")
             #endif
-            Log("──────────────── live codex output ↓ ────────────────")
+            Log("──────────────── live agent output ↓ ────────────────")
             do {
-                // ponytail: phase-2 — computer use needs the local-LLM agent loop. Until then this
-                // path returns a clear "not yet" so the notch surfaces the right state.
-                _ = try await LocalLLM.shared.runAgent(prompt)
-                // (Unreachable in phase 1; runAgent throws agentLoopDisabled.)
-                self?.complete(.failed, line: "✗ computer use needs the local-LLM agent loop (phase 2)")
+                // The computer-use loop: VLM endpoint + screenshot tools (click/type/key/scroll/
+                // done/could_not). Fresh screenshot after each turn so the model sees its actions.
+                let result = try await LocalLLM.shared.runAgentLoop(
+                    system: ComputerUse.systemPrompt(spoken: source == "voice", displays: shots.count),
+                    user: prompt,
+                    images: initialImages,
+                    tools: ComputerUse.tools(),
+                    maxTurns: 25,
+                    timeout: 1_800,
+                    screenshotProvider: { @Sendable in
+                        // Capture fresh screenshots after each action; the loop wires them into the
+                        // next user message. Failures are silent — an empty list just means the
+                        // model loses fresh vision this turn (it can still type/key blind).
+                        let fresh = await ScreenCapture.grab()
+                        let imgs = fresh.compactMap { try? Data(contentsOf: $0) }
+                        ScreenCapture.discard(fresh)
+                        return imgs
+                    },
+                    onTurn: { @Sendable turn in
+                        Task { @MainActor in
+                            #if DEBUG
+                            if let n = turn.narration { Log("CMD │ \(n)") }
+                            if let c = turn.toolCall { Log("CMD │ → \(c.name)(\(c.arguments))") }
+                            #endif
+                            if let n = turn.narration, !n.isEmpty { self?.push(n) }
+                            if let c = turn.toolCall {
+                                self?.push(Self.describeToolCall(c.name, args: c.arguments))
+                            }
+                        }
+                    }
+                )
+                // The loop returned without a done/could_not signal — treat as optimistic success.
+                let secs = Int(Date().timeIntervalSince(started))
+                Log("──────── 🤖 ✓ DONE in \(secs)s (no terminal signal — model exited the loop) ────────")
+                _ = result   // the final narration isn't surfaced; the per-turn narration already is
+                self?.complete(.success, line: "✓ done", statusPresent: false)
+            } catch let signal as TerminalSignal {
+                let secs = Int(Date().timeIntervalSince(started))
+                switch signal.outcome {
+                case .done:
+                    Log("──────── 🤖 ✓ DONE in \(secs)s — \(signal.message) ────────")
+                    self?.complete(.success, line: "✓ \(signal.message)")
+                case .couldNot:
+                    Log("──────── 🤖 ⚠️ COULD NOT after \(secs)s (\(signal.message.count)-char reason) ────────")
+                    self?.complete(.failed,
+                                   line: signal.message.isEmpty ? "✗ couldn't do it" : "✗ \(String(signal.message.prefix(160)))",
+                                   board: .refused)
+                }
             } catch {
                 let secs = Int(Date().timeIntervalSince(started))
                 if Task.isCancelled {
@@ -105,6 +147,30 @@ final class CommandRunModel {
                     self?.complete(.failed, line: "✗ \(Self.short(error))")
                 }
             }
+        }
+    }
+
+    /// One-line human description of a tool call for the status bar / notch.
+    private static func describeToolCall(_ name: String, args: [String: Any]) -> String {
+        switch name {
+        case "screenshot":  return "📸 looking"
+        case "click":
+            let x = args["x"].map { "\($0)" } ?? "?"
+            let y = args["y"].map { "\($0)" } ?? "?"
+            return "👆 clicking (\(x), \(y))"
+        case "type":
+            let n = (args["text"] as? String)?.count ?? 0
+            return "⌨️ typing \(n) chars"
+        case "key":
+            let k = (args["combo"] as? String) ?? "?"
+            return "🔑 \(k)"
+        case "scroll":
+            let d = (args["dy"] as? Double).map { Int($0) } ?? 0
+            return "🖱️ scrolling \(d)"
+        case "done", "could_not":
+            return ""   // the terminal handler will surface these
+        default:
+            return "→ \(name)"
         }
     }
 

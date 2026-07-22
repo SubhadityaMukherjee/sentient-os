@@ -41,7 +41,8 @@ actor LocalLLM {
     /// Invalidated by `reloadConfig()` (called by Settings when the user saves).
     private var cached: LocalLLMConfig?
 
-    private func config() throws -> LocalLLMConfig {
+    /// Config snapshot — internal so the agent-loop extension (LocalLLMAgent.swift) can reach it.
+    func config() throws -> LocalLLMConfig {
         if let cached { return cached }
         let c = LocalLLMConfig.current()
         guard c.isConfigured else { throw LLMError.notConfigured }

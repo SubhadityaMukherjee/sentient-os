@@ -40,19 +40,18 @@ final class ComputerUseGate {
     enum MicSpeechState { case granted, notAsked, denied }
     private(set) var micSpeech: MicSpeechState = .notAsked
 
-    /// Sentient's own Screen Recording — the screen context snapshot. OPTIONAL: without it,
-    /// Sidekick runs text-only; it never gates an action.
+    /// Sentient's own Screen Recording — the screen context snapshot. REQUIRED for computer use
+    /// (the agent needs to see what's there).
     private(set) var sentientScreen = false
 
-    /// The Codex Computer Use helper's presence + its two system-TCC grants (its hands and eyes).
-    private(set) var helperOnDisk = false
-    private(set) var helperAccessibility = false
-    private(set) var helperScreen = false
+    /// Sentient's own Accessibility — REQUIRED for CGEventPost (the click/type/key actions).
+    /// ponytail: was the codex helper's AX grant; now Sentient itself drives the Mac.
+    private(set) var sentientAccessibility = false
 
     /// The REQUIRED grants — what the gate holds actions for. Sentient's own two (Microphone &
-    /// Speech, Screen Recording) are deliberately absent: optional rows, shown but never blocking.
+    /// Speech) are deliberately absent: optional rows, shown but never blocking.
     var allRequiredGranted: Bool {
-        helperAccessibility && helperScreen
+        sentientAccessibility && sentientScreen
     }
 
     // MARK: The gate
@@ -80,11 +79,31 @@ final class ComputerUseGate {
 
     /// The one entry point. Returns true when the gate took over (window up, action stashed) and
     /// the caller must abort; false when the caller may just proceed.
-    /// ponytail: phase-2 — computer-use actions are gated off in phase 1, so this always passes
-    /// through. Restored when the AX-API local-LLM agent loop lands.
+    ///
+    /// ponytail: gates on Sentient's OWN Accessibility (for CGEventPost) + Screen Recording (for
+    /// `screencapture`). The codex helper's grants no longer matter — Sentient drives the Mac itself.
     func intercept(_ action: @escaping @MainActor () -> Void) -> Bool {
-        action()
-        return false
+        refresh()
+        let blocking = !allRequiredGranted
+        if !blocking {
+            HealthCaution.latchComputerUse()
+            let offerScreen = !sentientScreen && !Self.screenRecordingOffered
+            let offerMic = micSpeech != .granted && !Self.micSpeechOffered
+            guard offerScreen || offerMic else { return false }
+        }
+        if !sentientScreen { Self.screenRecordingOffered = true }
+        if micSpeech != .granted { Self.micSpeechOffered = true }
+        presentedBlocking = blocking
+        let wasVisible = window?.isVisible ?? false
+        pending = action
+        present()
+        if wasVisible {
+            Log("ComputerUseGate: re-intercepted — setup window already up, action re-held")
+        } else {
+            Analytics.signal("PermissionGate.shown", parameters: ["blocking": String(blocking)])
+            Log("ComputerUseGate: intercepted computer-use action — setup window up (\(blocking ? "required grants missing" : "optional-grants offer"))")
+        }
+        return true
     }
 
     /// Gate a surface that must not even OPEN while a required grant is missing — the Sidekick
@@ -115,19 +134,15 @@ final class ComputerUseGate {
         } else {
             micSpeech = .notAsked
         }
-        // Preflight is the running process's view — it stays false until a relaunch even after the
-        // user flips the switch. The TCC read (we hold FDA) is the LIVE truth, so the row can go
-        // green the moment they grant; the tip still says a restart is needed for capture.
+        // ponytail: AXIsProcessTrusted is the running process's view; stays false until a relaunch
+        // even after the user flips the switch. The TCC DB read (we hold FDA) is the LIVE truth.
+        sentientAccessibility = AXIsProcessTrusted()
+            || Permissions.isTCCGranted(service: "kTCCServiceAccessibility",
+                                        clientBundleID: Bundle.main.bundleIdentifier ?? "jesai.Sentient-OS-macOS")
+        // Screen Recording: same preflight/relaunch caveat as Accessibility.
         sentientScreen = Permissions.hasScreenRecording()
             || Permissions.isTCCGranted(service: "kTCCServiceScreenCapture",
                                         clientBundleID: Bundle.main.bundleIdentifier ?? "jesai.Sentient-OS-macOS")
-        helperOnDisk = Permissions.computerUseHelperURL() != nil
-        helperAccessibility = Permissions.isTCCGranted(
-            service: "kTCCServiceAccessibility",
-            clientBundleID: Permissions.computerUseHelperBundleID)
-        helperScreen = Permissions.isTCCGranted(
-            service: "kTCCServiceScreenCapture",
-            clientBundleID: Permissions.computerUseHelperBundleID)
     }
 
     /// The window's main button — dismiss and fire the held action. Only ever fires once every
