@@ -15,6 +15,7 @@ struct MenuBarView: View {
 
     var body: some View {
         Button("Open Sentient OS") { openHome() }
+        Button("Sidekick History") { openWindow(id: SidekickHistoryView.windowID) }
 
         Divider()
         switch appState.status {

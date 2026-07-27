@@ -77,6 +77,18 @@ struct SentientOSApp: App {
         .defaultSize(width: 1100, height: 720)
         .restorationBehavior(.disabled)
 
+        // Sidekick History — the "what Sidekick did for me" window. Reached from the menu-bar item
+        // or by tapping a completion notification (which deep-links here via RootView's openWindow).
+        // Single-instance titled window; reads from SidekickHistoryStore (its own SwiftData store).
+        Window("Sidekick History", id: SidekickHistoryView.windowID) {
+            SidekickHistoryView()
+                .environment(appState)
+                .preferredColorScheme(.dark)
+        }
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 760, height: 720)
+        .restorationBehavior(.disabled)
+
         // Settings — its own window, opened from the home's top-bar gear. Two-pane layout
         // (sidebar + pane), so it wants a wider canvas than the old single-column placeholder.
         Window("", id: SettingsView.windowID) {
