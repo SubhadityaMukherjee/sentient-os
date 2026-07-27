@@ -48,9 +48,33 @@ nonisolated enum AgentStatus {
         return .none
     }
 
+    /// The display-ready text after the marker on a `STATUS: DONE — <what you did>` line: "" if the
+    /// reply has no DONE sentinel (caller falls back to the command). A standalone bottom-up scan so
+    /// it can be called independently of `parse(_:)` — the Sidekick history + completion notification
+    /// use it to surface what the agent actually did, beyond the bare "✓ done".
+    static func summary(of reply: String) -> String {
+        for line in reply.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
+            let upper = line.uppercased()
+            guard upper.contains("STATUS:") else { continue }
+            let done = upper.contains("DONE")
+            let couldNot = upper.contains("COULD_NOT")
+            if done && couldNot { return "" }   // the echoed instruction line ("… OR …") — no real sentinel
+            if done { return excerpt(of: String(line)) }
+            // A stray "STATUS:" line that is neither form — keep scanning up.
+        }
+        return ""
+    }
+
     /// The display-ready text after the marker on a `STATUS: COULD_NOT — <reason>` line.
     private static func reason(of line: String) -> String {
         guard let r = line.range(of: "COULD_NOT", options: [.backwards, .caseInsensitive]) else { return "" }
+        return String(String(line[r.upperBound...]).trimmingCharacters(in: trimSet).prefix(300))
+    }
+
+    /// Strips the `STATUS: DONE` marker + separators from a sentinel line, returning the remainder
+    /// (mirrors `reason(of:)` for the DONE form).
+    private static func excerpt(of line: String) -> String {
+        guard let r = line.range(of: "DONE", options: [.backwards, .caseInsensitive]) else { return "" }
         return String(String(line[r.upperBound...]).trimmingCharacters(in: trimSet).prefix(300))
     }
 
