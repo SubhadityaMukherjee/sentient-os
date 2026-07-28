@@ -130,6 +130,9 @@ struct RootView: View {
         .onChange(of: showDevTools) { _, open in
             if !open { fdaGranted = Permissions.hasFullDiskAccess() }   // may have changed in the sheet
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openSidekickHistory)) { _ in
+            openWindow(id: SidekickHistoryView.windowID)
+        }
     }
 
     private var home: some View {

@@ -52,6 +52,12 @@ final class CommandRunModel {
     private var rememberClear: Task<Void, Never>?   // keeps "Remembering" up ≥1.5s so its bloom completes
     private var source = "command"                // who triggered this run (promptBar / voice) — scoreboard tag
     private var runStarted = Date()              // for the scoreboard duration
+    /// The ask for the in-flight run (command-bar text, or a proactive card's caption). Captured at
+    /// start / adoptExternal, read once at completion to write the Sidekick history record.
+    private var currentCommand = ""
+    /// The agent's one-line "what I did" (a DONE sentinel's summary) or the reason (a COULD_NOT) —
+    /// set as the Task closure resolves, read at completion. "" for stops / no-sentinel runs.
+    private var currentSummary = ""
 
     func start(_ text: String, mode: AgentMode, source: String = "command") {
         guard !isRunning else { return }
@@ -60,6 +66,8 @@ final class CommandRunModel {
         self.mode = mode
         self.source = source
         self.runStarted = Date()
+        self.currentCommand = task0
+        self.currentSummary = ""
         isDemo = false
         isExternal = false
         externalStop = nil
@@ -123,15 +131,18 @@ final class CommandRunModel {
                 let secs = Int(Date().timeIntervalSince(started))
                 Log("──────── 🤖 ✓ DONE in \(secs)s (no terminal signal — model exited the loop) ────────")
                 _ = result   // the final narration isn't surfaced; the per-turn narration already is
+                self?.currentSummary = String(result.prefix(160))
                 self?.complete(.success, line: "✓ done", statusPresent: false)
             } catch let signal as TerminalSignal {
                 let secs = Int(Date().timeIntervalSince(started))
                 switch signal.outcome {
                 case .done:
                     Log("──────── 🤖 ✓ DONE in \(secs)s — \(signal.message) ────────")
+                    self?.currentSummary = signal.message
                     self?.complete(.success, line: "✓ \(signal.message)")
                 case .couldNot:
                     Log("──────── 🤖 ⚠️ COULD NOT after \(secs)s (\(signal.message.count)-char reason) ────────")
+                    self?.currentSummary = signal.message
                     self?.complete(.failed,
                                    line: signal.message.isEmpty ? "✗ couldn't do it" : "✗ \(String(signal.message.prefix(160)))",
                                    board: .refused)
@@ -195,6 +206,8 @@ final class CommandRunModel {
         mode = .computer
         source = "proactive_card"        // log/analytics honesty only — external ends never reach complete()
         runStarted = Date()
+        currentCommand = caption
+        currentSummary = ""
         isDemo = false
         isExternal = true
         externalStop = onStopRequest
@@ -217,6 +230,7 @@ final class CommandRunModel {
     /// fire); just the shared epilogue. Idempotent: a late second arrival no-ops.
     func completeExternal(_ outcome: Outcome, line: String) {
         guard isRunning, isExternal else { return }
+        recordHistory(outcome)
         finish(outcome, line: line)
     }
 
@@ -392,7 +406,32 @@ final class CommandRunModel {
         Analytics.signal("ComputerUse.finished",
                          parameters: ["source": source, "method": mode.rawValue, "outcome": outcomeTag],
                          floatValue: Date().timeIntervalSince(runStarted))
+        recordHistory(outcome)
         finish(outcome, line: line)
+    }
+
+    /// Persist this run to the Sidekick history (always — even a stop was a real ask the user made),
+    /// and fire a completion notification for success / failed only (a stop is user-initiated, so the
+    /// user already knows). The onboarding demo never reaches here: it calls finish() directly, so its
+    /// scripted theater never lands in the history. User content (command + summary) lives only on
+    /// disk + the on-screen notification — never TelemetryDeck/Sentry.
+    private func recordHistory(_ outcome: Outcome) {
+        let skOutcome: SidekickOutcome = switch outcome {
+            case .success: .success; case .stopped: .stopped; case .failed: .failed
+        }
+        let draft = SidekickRunDraft(promptedAt: runStarted, command: currentCommand, mode: mode.rawValue,
+                                     source: source, outcome: skOutcome, summary: currentSummary,
+                                     durationSeconds: Date().timeIntervalSince(runStarted))
+        Task { await SidekickHistoryStore.shared.record(draft) }
+        guard outcome != .stopped else { return }
+        let title = outcome == .success ? "Sidekick finished" : "Sidekick couldn't finish"
+        let body: String
+        if outcome == .success {
+            body = currentSummary.isEmpty ? String(currentCommand.prefix(120)) : currentSummary
+        } else {
+            body = currentSummary.isEmpty ? "couldn't do it" : String(currentSummary.prefix(160))
+        }
+        Task { await Notify.now(title: title, body: body) }
     }
 
     private static func short(_ error: Error) -> String {

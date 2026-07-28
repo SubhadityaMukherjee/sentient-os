@@ -46,6 +46,10 @@ final class AppState {
     /// The notch overlay window — renders the coordinator's status phase as the living notch.
     private let notch: NotchWindowController
 
+    /// Owns the UNUserNotificationCenter delegate for the app's lifetime — a tap on a Sidekick
+    /// completion notification posts .openSidekickHistory, which RootView turns into an openWindow.
+    private let sidekickNotificationDelegate = SidekickNotificationDelegate()
+
     /// Drops the Dock icon whenever the home window is closed (the icon belongs to home;
     /// the menu bar item is the anchor then).
     private let dockPolicy = DockPolicy()
@@ -72,6 +76,10 @@ final class AppState {
         // DEBUG helper self-install re-home the ROOT wake daemon onto the temp binary, behind a
         // very real admin-password dialog. Same convention as Notify.swift's self-test silence.
         guard ProcessInfo.processInfo.environment["SENTIENT_SELFTEST"] == nil else { return }
+
+        // The Sidekick completion-notification tap delegate — set before any run can fire so taps on
+        // a queued notification land cleanly. Skipped under SENTIENT_SELFTEST with everything else.
+        UNUserNotificationCenter.current().delegate = sidekickNotificationDelegate
 
         scheduler.reevaluate()   // arm if the dev setting was left on; otherwise a no-op
         scheduler.maybeAutoEnable()   // 14h after initial: flip the overnight scheduler on (or arm the timer)
