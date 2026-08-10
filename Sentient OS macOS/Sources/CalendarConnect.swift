@@ -46,7 +46,13 @@ enum CalendarConnect {
 
     enum CalendarError: LocalizedError {
         case dateMath
-        var errorDescription: String? { "Calendar date math failed." }
+        case failed(String)
+        var errorDescription: String? {
+            switch self {
+            case .dateMath: return "Calendar date math failed."
+            case .failed(let m): return m
+            }
+        }
     }
 
     /// Parsed monthly/iterative read result (from the structured codex reply).
@@ -66,148 +72,36 @@ enum CalendarConnect {
 
     // MARK: - Connection probe (the "I'm done" YES/NO check)
 
-    /// One `codex exec`, read-only, that returns exactly YES/NO. Fail-closed (any error ⇒ false).
-    static func probeConnected() async -> Bool {
-        var inv = CodexCLI.Invocation(prompt: probePrompt)
-        inv.feature = "calendar"
-        inv.model = .gpt56luna               // light model for the connect-check
-        inv.effort = .low                    // a tool-availability YES/NO — no thinking needed
-        inv.sandbox = .readOnly
-        inv.webSearch = false
-        inv.timeout = 120
-        do {
-            let env = try await CodexCLI.shared.run(inv)
-            let answer = env.result.uppercased()
-            let yes = answer.contains("YES") && !answer.contains("NO")
-            Log("CalendarConnect.probe: codex replied (\(env.result.count) chars) ⇒ \(yes ? "connected" : "NOT connected")")
-            return yes
-        } catch {
-            Log("CalendarConnect.probe: ⚠️ \(ErrorLabel(error)) — treating as NOT connected")
-            return false
-        }
-    }
+    /// DISABLED in phase 1 — Calendar connector was codex's MCP; needs the agent loop.
+    /// ponytail: phase-2 restores when the agent loop has MCP-tool support.
+    static func probeConnected() async -> Bool { false }
 
     // MARK: - Initial read (last year → 12 monthly summaries)
 
-    /// Fresh start: wipe the bucket, then read the last 12 months newest-first (one summary each).
-    /// Records each into CycleStore; sets the high-water mark to the run-start on completion.
+    /// DISABLED in phase 1.
     @discardableResult
     static func runInitial(onProgress: @Sendable @escaping (Progress) -> Void = { _ in }) async throws -> Int {
-        await CycleStore.shared.clearBucket(bucketKey)
-        let runStart = Date()
-        let cal = Calendar.current
-        let today = cal.startOfDay(for: runStart)
-        guard let tomorrow = cal.date(byAdding: .day, value: 1, to: today) else { throw CalendarError.dateMath }
-
-        var recorded = 0
-        for month in 0..<initialMonths {
-            // Window [tomorrow − 1·(month+1), tomorrow − 1·month) months: contiguous, no overlap, newest
-            // first, past-only (the most recent window ends at end-of-today; future events ride the
-            // proactive fetch, not the knowledge-base read).
-            guard let upper = cal.date(byAdding: .month, value: -month, to: tomorrow),
-                  let lower = cal.date(byAdding: .month, value: -(month + 1), to: tomorrow),
-                  let upperDay = cal.date(byAdding: .day, value: -1, to: upper) else {
-                throw CalendarError.dateMath
-            }
-            let monthLabel = "\(label(lower)) – \(label(upperDay))"
-            let range = "with a start date/time on or after \(iso(lower)) and before \(iso(upper))"
-            let prompt = readPrompt(range: range, label: monthLabel)
-            onProgress(.windowStart(step: month + 1, total: initialMonths, label: monthLabel, prompt: prompt))
-            if let r = try await read(prompt: prompt) {
-                let itemDate = upperDay
-                await record(r, itemDate: itemDate, label: monthLabel)
-                recorded += 1
-                onProgress(.windowDone(step: month + 1, total: initialMonths, label: monthLabel,
-                                       summary: r.summary, events: r.eventCount, keptSoFar: recorded))
-            } else {
-                onProgress(.windowDone(step: month + 1, total: initialMonths, label: monthLabel,
-                                       summary: nil, events: 0, keptSoFar: recorded))
-            }
-        }
-        // High-water mark = run start. Iterative reads everything after it (a little overlap is
-        // harmless — the cloud updater synthesizes — and beats a boundary gap).
-        await CycleStore.shared.setPointer(bucketKey, ItemKey(order: runStart.timeIntervalSince1970, tiebreak: ""))
-        Log("CalendarConnect.runInitial: ✅ \(recorded)/\(initialMonths) monthly summaries recorded; pointer → \(runStart)")
-        return recorded
+        throw CalendarError.failed("Calendar needs the local-LLM agent loop (phase 2).")
     }
 
     // MARK: - Iterative read (since the high-water mark)
 
-    /// One summary covering events since the saved mark, then advance the mark. Falls back to a full
-    /// initial read if Calendar has never been read on this Mac.
+    /// DISABLED in phase 1.
     @discardableResult
     static func runIterative(onProgress: @Sendable @escaping (Progress) -> Void = { _ in }) async throws -> Int {
-        guard let mark = await CycleStore.shared.pointer(bucketKey) else {
-            return try await runInitial(onProgress: onProgress)   // never read → fall back to initial
-        }
-        let since = Date(timeIntervalSince1970: mark.order)
-        let runStart = Date()
-        let sinceLabel = "since \(label(since))"
-        let range = "with a start date/time on or after \(iso(since)) and before \(iso(runStart))"
-        let prompt = readPrompt(range: range, label: sinceLabel)
-        onProgress(.windowStart(step: 1, total: 1, label: sinceLabel, prompt: prompt))
-        var recorded = 0
-        if let r = try await read(prompt: prompt) {
-            await record(r, itemDate: runStart, label: sinceLabel)
-            recorded = 1
-            onProgress(.windowDone(step: 1, total: 1, label: sinceLabel,
-                                   summary: r.summary, events: r.eventCount, keptSoFar: 1))
-        } else {
-            onProgress(.windowDone(step: 1, total: 1, label: sinceLabel,
-                                   summary: nil, events: 0, keptSoFar: 0))
-        }
-        await CycleStore.shared.setPointer(bucketKey, ItemKey(order: runStart.timeIntervalSince1970, tiebreak: ""))
-        Log("CalendarConnect.runIterative: ✅ \(recorded) summary since \(since); pointer → \(runStart)")
-        return recorded
+        throw CalendarError.failed("Calendar needs the local-LLM agent loop (phase 2).")
     }
 
     // MARK: - Proactive context (last 7 days + next 24 hours — ALL events, uncurated)
 
-    /// A compact, chronological text dump of the user's recent + imminent calendar, injected into BOTH
-    /// proactive stages. Unlike the read above this does NOT curate — proactive wants every event
-    /// (a "free" slot is as informative as a meeting). Returns nil when the connector is unavailable or
-    /// the read fails (proactive then runs without calendar context). Read-only; no bypass needed.
-    static func fetchProactiveContext() async -> String? {
-        var inv = CodexCLI.Invocation(prompt: proactiveFetchPrompt)
-        inv.feature = "calendar-proactive"
-        inv.model = .gpt56luna
-        inv.effort = .medium
-        inv.sandbox = .readOnly
-        inv.webSearch = false
-        inv.outputSchema = proactiveSchema
-        inv.timeout = 300
-        do {
-            let env = try await CodexCLI.shared.run(inv)
-            guard let span = jsonSpan(env.result),
-                  let data = span.data(using: .utf8),
-                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  (obj["connected"] as? Bool) == true,
-                  let text = (obj["events_text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !text.isEmpty else {
-                Log("CalendarConnect.fetchProactiveContext: no calendar context (not connected / empty)")
-                return nil
-            }
-            Log("CalendarConnect.fetchProactiveContext: ✅ \(text.count) chars of live calendar context")
-            return text
-        } catch {
-            Log("CalendarConnect.fetchProactiveContext: ⚠️ \(ErrorLabel(error)) — proactive runs without calendar")
-            return nil
-        }
-    }
+    /// DISABLED in phase 1 — was a codex MCP read.
+    static func fetchProactiveContext() async -> String? { nil }
 
-    // MARK: - One read (a single codex exec over a date window)
+    // MARK: - One read (a single agent call over a date window)
 
     private static func read(prompt: String) async throws -> ReadResult? {
-        var inv = CodexCLI.Invocation(prompt: prompt)
-        inv.feature = "calendar"
-        inv.model = .gpt56luna               // light model — calendar data is small + structured
-        inv.effort = .medium                 // gpt-5.6-luna → medium
-        inv.sandbox = .readOnly              // we only read the calendar + return text (no writes)
-        inv.webSearch = false                // the calendar is the only source this needs
-        inv.outputSchema = readSchema
-        inv.timeout = 600
-        let env = try await CodexCLI.shared.run(inv)
-        return parse(env.result)
+        _ = try await LocalLLM.shared.runAgent(prompt)   // throws agentLoopDisabled
+        return nil
     }
 
     private static func record(_ r: ReadResult, itemDate: Date, label: String) async {

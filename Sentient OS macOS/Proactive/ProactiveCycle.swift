@@ -120,7 +120,7 @@ actor ProactiveCycle {
         // 3) Proactive — decide, then research + prepare. Inject the live calendar when connected.
         //    Knowledge-base-only mode (free/go plan) skips the whole stage: no quota for it, and
         //    no Gmail/Calendar to ground it — the knowledge base + mirror + gift ARE the product.
-        if CodexAuth.knowledgeBaseOnly {
+        if !LocalLLMConfig.isConfigured {
             ProactiveResearch.saveLatest(ReadyResult(ready: [], dropped: []))   // never leave stale cards
         } else {
             var calCtx: String?

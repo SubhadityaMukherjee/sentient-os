@@ -40,19 +40,18 @@ final class ComputerUseGate {
     enum MicSpeechState { case granted, notAsked, denied }
     private(set) var micSpeech: MicSpeechState = .notAsked
 
-    /// Sentient's own Screen Recording — the screen context snapshot. OPTIONAL: without it,
-    /// Sidekick runs text-only; it never gates an action.
+    /// Sentient's own Screen Recording — the screen context snapshot. REQUIRED for computer use
+    /// (the agent needs to see what's there).
     private(set) var sentientScreen = false
 
-    /// The Codex Computer Use helper's presence + its two system-TCC grants (its hands and eyes).
-    private(set) var helperOnDisk = false
-    private(set) var helperAccessibility = false
-    private(set) var helperScreen = false
+    /// Sentient's own Accessibility — REQUIRED for CGEventPost (the click/type/key actions).
+    /// ponytail: was the codex helper's AX grant; now Sentient itself drives the Mac.
+    private(set) var sentientAccessibility = false
 
     /// The REQUIRED grants — what the gate holds actions for. Sentient's own two (Microphone &
-    /// Speech, Screen Recording) are deliberately absent: optional rows, shown but never blocking.
+    /// Speech) are deliberately absent: optional rows, shown but never blocking.
     var allRequiredGranted: Bool {
-        helperAccessibility && helperScreen
+        sentientAccessibility && sentientScreen
     }
 
     // MARK: The gate
@@ -79,32 +78,19 @@ final class ComputerUseGate {
     private var closeObserver: NSObjectProtocol?
 
     /// The one entry point. Returns true when the gate took over (window up, action stashed) and
-    /// the caller must abort; false when the caller may just proceed. It takes over in two cases:
-    ///   • a REQUIRED grant is missing → BLOCKING: always re-shows (or re-focuses) and re-holds the
-    ///     action until every required grant is green — so a feature can never fire half-granted no
-    ///     matter how many times the window was dismissed (Continue is disabled, close drops it).
-    ///   • all required are green but one of Sentient's OPTIONAL grants (Microphone & Speech ·
-    ///     Screen Recording) is missing and hasn't been offered yet → NON-BLOCKING, once ever:
-    ///     Continue is enabled immediately and closing still FIRES the held command, so an
-    ///     optional nudge never eats what the user fired.
+    /// the caller must abort; false when the caller may just proceed.
+    ///
+    /// ponytail: gates on Sentient's OWN Accessibility (for CGEventPost) + Screen Recording (for
+    /// `screencapture`). The codex helper's grants no longer matter — Sentient drives the Mac itself.
     func intercept(_ action: @escaping @MainActor () -> Void) -> Bool {
         refresh()
-        // The executor also needs the Automation grant (Sentient → the helper over Apple Events);
-        // it's user-invisible and FDA-writable, so heal it on EVERY fire — not just when this window
-        // shows. Without this, a previously-working setup whose grant got dropped (a Sentient rebuild
-        // with new signing, a ChatGPT.app/plugin update, an OS update) hangs at `list_apps` forever,
-        // because the fast-return path below never reaches the old `present()`-site self-heal.
-        Permissions.selfHealComputerUseAutomation(context: "ComputerUseGate")
         let blocking = !allRequiredGranted
         if !blocking {
-            // Seen working — arm the home's regression banner (HealthCaution rung ③).
             HealthCaution.latchComputerUse()
-            // Nothing required is missing — the only reason to appear is a one-time optional offer.
             let offerScreen = !sentientScreen && !Self.screenRecordingOffered
             let offerMic = micSpeech != .granted && !Self.micSpeechOffered
             guard offerScreen || offerMic else { return false }
         }
-        // The rows are shown → they've now been offered them.
         if !sentientScreen { Self.screenRecordingOffered = true }
         if micSpeech != .granted { Self.micSpeechOffered = true }
         presentedBlocking = blocking
@@ -131,20 +117,10 @@ final class ComputerUseGate {
         intercept({})
     }
 
-    /// A voice HOLD against a DENIED mic/speech grant — an unambiguous "I want to talk" that can
-    /// never work and has no native prompt left to re-show (denied prompts appear once, ever). So
-    /// raise the setup window as a FIX SURFACE: non-blocking, nothing held, its Mic & Speech row
-    /// one Fix… away from the right System Settings pane. Voice stays optional — typed commands
-    /// and taps never reach this. Returns true when the window was raised (denied confirmed by a
-    /// fresh probe) and the caller should stand down; false means not denied — proceed to capture
-    /// (a not-asked-yet grant gets the native prompt instead).
+    /// ponytail: phase-2 — voice-fix surface restored when the AX-API agent loop lands; for now
+    /// the gate is dormant, so denied-mic holds just no-op.
     func presentVoiceFixIfDenied() -> Bool {
-        refresh()
-        guard micSpeech == .denied else { return false }
-        presentedBlocking = false   // pending stays untouched — a held offer command still fires on close
-        present()
-        Log("ComputerUseGate: voice hold hit a denied mic/speech — setup window up as the fix surface")
-        return true
+        return false
     }
 
     /// Re-probe all four grants (cheap; the TCC reads are two tiny indexed SELECTs).
@@ -158,19 +134,15 @@ final class ComputerUseGate {
         } else {
             micSpeech = .notAsked
         }
-        // Preflight is the running process's view — it stays false until a relaunch even after the
-        // user flips the switch. The TCC read (we hold FDA) is the LIVE truth, so the row can go
-        // green the moment they grant; the tip still says a restart is needed for capture.
+        // ponytail: AXIsProcessTrusted is the running process's view; stays false until a relaunch
+        // even after the user flips the switch. The TCC DB read (we hold FDA) is the LIVE truth.
+        sentientAccessibility = AXIsProcessTrusted()
+            || Permissions.isTCCGranted(service: "kTCCServiceAccessibility",
+                                        clientBundleID: Bundle.main.bundleIdentifier ?? "jesai.Sentient-OS-macOS")
+        // Screen Recording: same preflight/relaunch caveat as Accessibility.
         sentientScreen = Permissions.hasScreenRecording()
             || Permissions.isTCCGranted(service: "kTCCServiceScreenCapture",
                                         clientBundleID: Bundle.main.bundleIdentifier ?? "jesai.Sentient-OS-macOS")
-        helperOnDisk = Permissions.computerUseHelperURL() != nil
-        helperAccessibility = Permissions.isTCCGranted(
-            service: "kTCCServiceAccessibility",
-            clientBundleID: Permissions.computerUseHelperBundleID)
-        helperScreen = Permissions.isTCCGranted(
-            service: "kTCCServiceScreenCapture",
-            clientBundleID: Permissions.computerUseHelperBundleID)
     }
 
     /// The window's main button — dismiss and fire the held action. Only ever fires once every

@@ -37,10 +37,7 @@ struct RootView: View {
     // the finish closure below re-resolves so the home's Analyze Now works without a relaunch.
     @State private var modelPath = ModelLocator.resolve()
 
-    /// Observed for the global "setting up computer use" whisper (the overlay below).
-    @State private var codex = CodexSetup.shared
-
-    /// Observed for the bottom-left model-download whisper (same overlay slot).
+    /// Observed for the bottom-left model-download whisper.
     @State private var download = ModelDownload.shared
 
     // Dev Tools → "Resizable analysis window (demo)": while the analysis takeover is up, the
@@ -114,26 +111,14 @@ struct RootView: View {
         // state so they ride the bottom of WHATEVER screen is up:
         // · the model-download card (ModelDownloadWhisper) — the on-device model landing in the
         //   background while the user is elsewhere (it hides itself when onboarding's full-screen
-        //   downloading view shows the same bar big);
-        // · the computer-use setup line — the bootstrap is an unstructured background task that
-        //   outlives onboarding's processing takeover (knowledge base creation, even the home in
-        //   rare cases), so as long as it's actually running, this quiet line shows.
+        //   downloading view shows the same bar big).
+        // ponytail: phase-2 — was the codex computer-use bootstrap whisper line.
         .overlay(alignment: .bottomLeading) {
             VStack(alignment: .leading, spacing: 10) {
                 ModelDownloadWhisper(download: download)
-                if codex.settingUpComputerUse {
-                    HStack(spacing: 7) {
-                        ProgressView().controlSize(.small).scaleEffect(0.6)
-                        Text("Setting up Codex computer use in the background.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.faint)
-                    }
-                    .transition(.opacity)
-                }
             }
             .padding(.leading, 22).padding(.bottom, 12)
         }
-        .animation(.easeInOut(duration: 0.35), value: codex.settingUpComputerUse)
         .animation(.easeInOut(duration: 0.35), value: download.phase)
         .animation(.easeInOut(duration: 0.35), value: download.fullScreenVisible)
         // The mandatory update gate floats above everything (home, processing, dev sheet) — when a

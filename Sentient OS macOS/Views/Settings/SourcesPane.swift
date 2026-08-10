@@ -138,9 +138,9 @@ struct SourcesPane: View {
                 SettingsProse("Read through your own connectors, never our servers.")
                 ChipFlow {
                     SettingsChip(label: "Gmail", on: gmailConnected && runGmail,
-                                 locked: CodexAuth.knowledgeBaseOnly) { showGmailConnect = true }
+                                 locked: !LocalLLMConfig.isConfigured) { showGmailConnect = true }
                     SettingsChip(label: "Google Calendar", on: calendarConnected && runCalendar,
-                                 locked: CodexAuth.knowledgeBaseOnly) { showCalendarConnect = true }
+                                 locked: !LocalLLMConfig.isConfigured) { showCalendarConnect = true }
                 }
             }
         }

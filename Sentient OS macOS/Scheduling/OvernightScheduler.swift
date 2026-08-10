@@ -122,7 +122,7 @@ final class OvernightScheduler {
     func maybeAutoEnable() {
         // Free/go knowledge-base-only mode: no quota for nightly runs — auto-enable never fires.
         // Deliberately NOT latched, so an upgrade (+ reset) later starts the 14h clock fresh.
-        guard !CodexAuth.knowledgeBaseOnly else { return }
+        guard LocalLLMConfig.isConfigured else { return }
         let d = UserDefaults.standard
         guard !d.bool(forKey: Self.autoEnableFiredKey) else { return }      // already handled once
 

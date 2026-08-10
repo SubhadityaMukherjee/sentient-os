@@ -30,9 +30,8 @@ enum HealthCaution {
 
     enum Issue {
         case permissions([EssentialPermission])
-        case codexMissing
-        case codexSignedOut
-        case computerUseBroken(payloadGone: Bool)   // true = the ~/.codex bootstrap vanished; false = the helper's grants did
+        case endpointMissing          // no local LLM endpoint configured
+        // ponytail: phase-2 — add computerUseBroken when the AX-API agent loop lands.
 
         /// The banner line — quiet, first-person, honest about what happens next.
         var message: String {
@@ -46,23 +45,16 @@ enum HealthCaution {
                 case .overnightWake:  return "The overnight wake helper is off, so I can't work while you sleep."
                 case .launchAtLogin:  return "Launch at login is off, so I won't be awake for the 3 AM run."
                 }
-            case .codexMissing:
-                return "Codex is missing from this Mac, so my cloud work is paused. A quick reinstall fixes it."
-            case .codexSignedOut:
-                return "Codex is signed out, so proactive work is paused. Log back in and I'll catch up tonight."
-            case .computerUseBroken(let payloadGone):
-                return payloadGone
-                    ? "Computer use needs setting up again; Codex may have updated. One click in Settings fixes it."
-                    : "Codex's computer use lost its permissions, so I can't act on your Mac for you."
+            case .endpointMissing:
+                return "No local LLM endpoint is set. Configure one in Settings and proactive intelligence wakes up."
             }
         }
 
         /// Dismissal identity — ✕ mutes the whole KIND for the session, not one exact payload.
         var kindKey: String {
             switch self {
-            case .permissions:                   return "permissions"
-            case .codexMissing, .codexSignedOut: return "codex"
-            case .computerUseBroken:             return "computerUse"
+            case .permissions:     return "permissions"
+            case .endpointMissing: return "endpoint"
             }
         }
     }
@@ -91,17 +83,9 @@ enum HealthCaution {
 
     // MARK: The probe
 
-    /// `codex login status` shells out — cache the verdict so foreground flurries can't spam it.
-    private static var codexLogin: (verdict: Bool, at: Date)?
-
     /// The ladder, most severe first. Returns the worst LIVE issue the user hasn't muted, or nil.
-    /// `forceCodexRecheck` bypasses the login cache — the home passes it while a codex banner is
-    /// showing, so logging back in clears the capsule on the very next foreground.
+    /// `forceCodexRecheck` kept for source-compat (no longer used; the codex login cache is gone).
     static func probe(forceCodexRecheck: Bool = false) async -> Issue? {
-        // The free-plan preview home: nightly runs, proactive, and Sidekick are all Plus-gated,
-        // so nothing this ladder checks is worth interrupting that home for.
-        guard !CodexAuth.knowledgeBaseOnly else { return nil }
-
         // ① Essential permissions (cheap sync probes: file reads + SMAppService status).
         let fda = Permissions.hasFullDiskAccess()
         var missing: [EssentialPermission] = []
@@ -115,39 +99,16 @@ enum HealthCaution {
         if !LoginItem.isEnabled { missing.append(.launchAtLogin) }
         if !missing.isEmpty, !dismissed.contains("permissions") { return .permissions(missing) }
 
-        // ② Codex — gone, or signed out.
-        let codexInstalled = CodexCLI.locateBinary() != nil
-        if !dismissed.contains("codex") {
-            if !codexInstalled { return .codexMissing }
-            if await !loggedIn(force: forceCodexRecheck) { return .codexSignedOut }
+        // ② Local LLM endpoint — not configured.
+        if !dismissed.contains("endpoint"), !LocalLLMConfig.isConfigured {
+            return .endpointMissing
         }
 
-        // ③ Computer use — only once latched, and only with FDA to read the helper's system-TCC
-        // grants (without FDA rung ① already speaks; unverifiable must never claim broken).
-        if fda, codexInstalled, !dismissed.contains("computerUse") {
-            if !ComputerUseSetup.isInstalled {
-                if computerUseEverReady { return .computerUseBroken(payloadGone: true) }
-            } else {
-                let hands = Permissions.isTCCGranted(service: "kTCCServiceAccessibility",
-                                                     clientBundleID: Permissions.computerUseHelperBundleID)
-                let eyes = Permissions.isTCCGranted(service: "kTCCServiceScreenCapture",
-                                                    clientBundleID: Permissions.computerUseHelperBundleID)
-                if hands && eyes {
-                    latchComputerUse()   // healthy — arm the latch so future drift banners
-                } else if computerUseEverReady {
-                    return .computerUseBroken(payloadGone: false)
-                }
-            }
-        }
+        // ponytail: phase-2 — computer-use banner restored when the AX-API agent loop lands.
         return nil
     }
 
-    private static func loggedIn(force: Bool) async -> Bool {
-        if !force, let cached = codexLogin, Date().timeIntervalSince(cached.at) < 300 {
-            return cached.verdict
-        }
-        let verdict = await CodexCLI.loginStatus()
-        codexLogin = (verdict, Date())
-        return verdict
-    }
+    // ponytail: was the codex login cache; now unused but kept for source compat. Phase 2 removes.
+    private static var codexLogin: (verdict: Bool, at: Date)?
+    private static func loggedIn(force: Bool) async -> Bool { LocalLLMConfig.isConfigured }
 }

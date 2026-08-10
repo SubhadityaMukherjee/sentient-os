@@ -81,22 +81,18 @@ struct UpdateNoticeCapsule: View {
     ZStack {
         Color.black.ignoresSafeArea()
         VStack(alignment: .trailing, spacing: 14) {
-            CautionCapsule(message: OvernightCaution.Kind.loggedOut.message,
-                           actionTitle: "Open Settings", onAction: {}, onDismiss: {})
-            CautionCapsule(message: OvernightCaution.Kind.noInternet.message, onDismiss: {})
-            CautionCapsule(message: OvernightCaution.Kind.usageLimit.message, onDismiss: {})
-            CautionCapsule(message: HealthCaution.Issue.permissions([.fullDiskAccess]).message,
-                           accent: Theme.Ink.red,
-                           actionTitle: "Open Settings", onAction: {}, onDismiss: {})
-            CautionCapsule(message: HealthCaution.Issue.permissions([.fullDiskAccess, .launchAtLogin]).message,
-                           accent: Theme.Ink.red,
-                           actionTitle: "Open Settings", onAction: {}, onDismiss: {})
-            CautionCapsule(message: HealthCaution.Issue.codexSignedOut.message,
-                           accent: Theme.Ink.red,
-                           actionTitle: "Open Settings", onAction: {}, onDismiss: {})
-            CautionCapsule(message: HealthCaution.Issue.computerUseBroken(payloadGone: true).message,
-                           accent: Theme.Ink.red,
-                           actionTitle: "Open Settings", onAction: {}, onDismiss: {})
+             CautionCapsule(message: OvernightCaution.Kind.endpointMissing.message,
+                            actionTitle: "Open Settings", onAction: {}, onDismiss: {})
+             CautionCapsule(message: OvernightCaution.Kind.failed.message, onDismiss: {})
+             CautionCapsule(message: HealthCaution.Issue.permissions([.fullDiskAccess]).message,
+                            accent: Theme.Ink.red,
+                            actionTitle: "Open Settings", onAction: {}, onDismiss: {})
+             CautionCapsule(message: HealthCaution.Issue.permissions([.fullDiskAccess, .launchAtLogin]).message,
+                            accent: Theme.Ink.red,
+                            actionTitle: "Open Settings", onAction: {}, onDismiss: {})
+             CautionCapsule(message: HealthCaution.Issue.endpointMissing.message,
+                            accent: Theme.Ink.red,
+                            actionTitle: "Open Settings", onAction: {}, onDismiss: {})
             CautionCapsule(message: "Sentient just updated!",
                            accent: Theme.Ink.green,
                            actionTitle: "Read the changelog", onAction: {}, onDismiss: {})

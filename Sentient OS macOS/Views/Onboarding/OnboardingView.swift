@@ -75,11 +75,15 @@ struct OnboardingView: View {
             case 1:
                 OnboardingPermissionsView(onContinue: advance).transition(.opacity)
             case 2:
-                OnboardingCodexLoginView(onContinue: advance).transition(.opacity)
+                OnboardingEndpointView(onContinue: advance).transition(.opacity)
             case 3:
-                // The plan crossroads — free/go accounts decide here; full plans skip it
-                // before it renders (OnboardingPlanView auto-advances).
-                OnboardingPlanView(onContinue: advance).transition(.opacity)
+                // ponytail: phase-2 — was the plan crossroads (OnboardingPlanView, now deleted).
+                // Auto-advance past it; the case is kept so existing onboarding.step persisted
+                // values still resolve correctly through the index sequence.
+                OnboardingReadyView {
+                    withAnimation(.easeInOut(duration: 0.3)) { analyzing = true }
+                }
+                .transition(.opacity)
             default:
                 if analyzing, let modelPath {
                     // The REAL first analysis — the same engine + takeover as the home's Analyze
@@ -95,7 +99,7 @@ struct OnboardingView: View {
                                    onExitEarly: { withAnimation(.easeInOut(duration: 0.3)) { analyzing = false } },
                                    onDone: onFinished)
                         .transition(.opacity)
-                        .onAppear(perform: armComputerUseSetup)
+                        .onAppear { /* ponytail: phase-2 — was codex computer-use bootstrap */ }
                 } else if analyzing {
                     // Start Analysis outran the model download — the honest wait, never a dead
                     // button. The `modelPath` read above re-resolves when the phase flips, so
@@ -174,34 +178,16 @@ struct OnboardingView: View {
         #endif
     }
 
-    /// Two minutes into the first analysis, bootstrap codex computer use (setup step 3) silently
-    /// in the background — so it's ready by the time the home's cards and Sidekick need it, with
-    /// no onboarding screen of its own. Armed when the analysis takeover APPEARS (not at Start
-    /// Analysis), so its ~535 MB DMG never races the model download still finishing behind the
-    /// downloading screen. An unstructured Task on purpose: pausing or exiting the
-    /// analysis must NOT cancel a DMG download mid-flight. setupComputerUse() self-guards (no-op
-    /// when already bootstrapped, requires the codex binary), so a quit-and-relaunch that restarts
-    /// the analysis just re-arms harmlessly; failures land in the log + Sentry, never in the UI.
-    private func armComputerUseSetup() {
-        guard !computerUseArmed else { return }
-        computerUseArmed = true
-        Task {
-            try? await Task.sleep(for: .seconds(120))
-            Log("Onboarding: 2 min into first analysis — starting background computer-use setup")
-            await CodexSetup.shared.setupComputerUse()
-        }
-    }
+    // ponytail: phase-2 — was the codex computer-use bootstrap (armComputerUseSetup). Restored
+    // when the AX-API agent loop lands; until then there's nothing to arml
 
     private func advance() {
         withAnimation(.easeInOut(duration: 0.25)) { step += 1 }
     }
 
     private func goBack() {
-        var target = step - 1
-        // The crossroads only exists for free/go accounts — never strand a full plan on an
-        // auto-advancing screen (back would visibly bounce forward again).
-        if target == 3 && !CodexAuth.isLimited() { target -= 1 }
-        withAnimation(.easeInOut(duration: 0.25)) { step = max(0, target) }
+        let target = max(0, step - 1)
+        withAnimation(.easeInOut(duration: 0.25)) { step = target }
     }
 
 }

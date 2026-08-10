@@ -17,6 +17,7 @@
 
 import Foundation
 import AppKit
+import ApplicationServices   // AXIsProcessTrusted — Sentient's own Accessibility (phase-3 computer use)
 import CoreGraphics // CGPreflight/RequestScreenCaptureAccess — Sentient's own Screen Recording grant
 import Security   // SecCode/SecStaticCode → an app's Designated Requirement (the TCC csreq blob)
 import SQLite3    // direct, parameterized write into the user's TCC.db (we already hold Full Disk Access)
@@ -226,6 +227,12 @@ enum Permissions {
     /// list; the grant only takes effect after an app restart. Returns the current (pre-restart) status.
     @discardableResult
     static func requestScreenRecording() -> Bool { CGRequestScreenCaptureAccess() }
+
+    // MARK: - Sentient's own Accessibility (phase-3 computer use — CGEventPost)
+
+    /// True iff Sentient already holds Accessibility. `AXIsProcessTrusted` never prompts.
+    /// ponytail: phase-3 — was the codex helper's grant; Sentient itself now drives the Mac.
+    static func hasAccessibility() -> Bool { AXIsProcessTrusted() }
 
     // MARK: - Settings deep-links (we can't flip these toggles; the user does)
 

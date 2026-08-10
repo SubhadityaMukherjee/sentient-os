@@ -221,7 +221,7 @@ struct SettingsChip: View {
 /// tooltip's delay made it look like there was none. Shared by SettingsChip and SourceChip.
 struct LockedChipTip: View {
     var body: some View {
-        Text(CodexAuth.connectorLockedTip)
+        Text("Available once you configure a local LLM endpoint")
             .font(.system(size: 10.5, weight: .medium))
             .foregroundStyle(.white.opacity(0.88))
             .padding(.horizontal, 10).padding(.vertical, 5)
